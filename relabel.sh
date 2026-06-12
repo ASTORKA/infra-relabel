@@ -32,7 +32,10 @@ CONF="${RELABEL_CONF:-$SCRIPT_DIR/names.conf}"
 STATE_DIR="$SCRIPT_DIR/.state"
 STATE_FILE="$STATE_DIR/applied.map"      # строки: decoy|orig|compose_file
 IMG_STATE_FILE="$STATE_DIR/images.map"   # строки: decoy_img|orig_img|file|svc|wd|cfgs
+PROJ_STATE_FILE="$STATE_DIR/projects.map" # строки: N|P|D2|D|cfgs
 BACKUP_DIR="$STATE_DIR/backups"
+
+DRY_RUN=0   # 1 — только показывать команды, ничего не выполнять
 
 mkdir -p "$STATE_DIR" "$BACKUP_DIR"
 
@@ -48,6 +51,25 @@ die() { c_red "Ошибка: $*" >&2; exit 1; }
 trim() { local s="$*"; s="${s#"${s%%[![:space:]]*}"}"; s="${s%"${s##*[![:space:]]}"}"; printf '%s' "$s"; }
 
 need_docker() { command -v docker >/dev/null 2>&1 || die "docker не найден в PATH"; }
+
+# Выполнить команду либо показать её (в dry-run). Аргументы — как есть.
+run() {
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '  \033[2m[dry]'; printf ' %q' "$@"; printf '\033[0m\n'
+  else
+    "$@"
+  fi
+}
+
+# Заменить подстроку (путь) в файле глобально. $1=file $2=from $3=to
+replace_path() {
+  local file="$1" from="$2" to="$3" tmp
+  [ -f "$file" ] || return 0
+  tmp="$(mktemp)"
+  sed "s|$from|$to|g" "$file" >"$tmp"
+  cat "$tmp" >"$file"
+  rm -f "$tmp"
+}
 
 # Поддержка как `docker compose`, так и старого `docker-compose` (для справки).
 compose_cmd() {
@@ -350,6 +372,112 @@ cmd_images_restore() {
   c_grn "Откат образов завершён."
 }
 
+# Шаг B: переименование compose-проекта + каталога + сети.
+# Защита: проекты с именованными томами пропускаются (риск данных).
+cmd_project() {
+  load_conf
+  local compose; compose="$(compose_cmd)"
+  [ -n "$compose" ] || die "нужен docker compose v2"
+  [ "$DRY_RUN" = 1 ] && c_yel "DRY-RUN: команды только показываются, ничего не меняется."
+  touch "$PROJ_STATE_FILE"
+  : >"$PROJ_STATE_FILE.tmp"
+
+  local i orig decoy cur P D N D2 cfgs vols refs f bname
+  for i in "${!ORIG_LIST[@]}"; do
+    orig="${ORIG_LIST[$i]}"; decoy="${DECOY_LIST[$i]}"; N="$decoy"
+    cur="$(resolve_container "$orig" "$decoy" || true)"
+    [ -z "$cur" ] && { c_yel "· $orig/$decoy — нет контейнера, пропуск"; continue; }
+
+    P="$(docker_label "$cur" com.docker.compose.project)"
+    D="$(docker_label "$cur" com.docker.compose.project.working_dir)"
+    cfgs="$(docker_label "$cur" com.docker.compose.project.config_files)"
+    if [ -z "$P" ] || [ -z "$D" ]; then c_yel "· $cur — не из compose, пропуск"; continue; fi
+    if [ "$P" = "$N" ]; then c_dim "· $cur: проект уже $N"; continue; fi
+
+    # защита данных: именованные тома → пропуск (так автоматически минуем caddy)
+    vols="$(docker volume ls -q --filter "label=com.docker.compose.project=$P" 2>/dev/null || true)"
+    if [ -n "$vols" ]; then
+      c_yel "· $P: есть именованные тома — пропуск (риск данных): $(echo $vols | tr '\n' ' ')"
+      continue
+    fi
+
+    D2="$(dirname "$D")/$N"
+    if [ -e "$D2" ]; then c_yel "· $D2 уже существует — пропуск"; continue; fi
+
+    # предупреждение о внешних ссылках на каталог (systemd и т.п.)
+    refs="$(grep -rslF -- "$D" /etc/systemd 2>/dev/null | head -3 || true)"
+    [ -n "$refs" ] && c_yel "  ! на $D ссылаются (проверьте вручную): $(echo $refs)"
+
+    c_grn "· проект $P → $N,  $D → $D2,  сеть ${P}_default → ${N}_default"
+
+    # -f аргументы для старого (D) и нового (D2) расположения
+    local -a fold=() fnew=()
+    local OLDIFS="$IFS"; IFS=','
+    for f in $cfgs; do
+      f="$(trim "$f")"; [ -z "$f" ] && continue
+      case "$f" in /*) ;; *) f="$D/$f" ;; esac
+      fold+=( -f "$f" ); fnew+=( -f "${f/#$D/$D2}" )
+    done
+    IFS="$OLDIFS"
+
+    # бэкап compose-файлов
+    if [ "$DRY_RUN" != 1 ]; then
+      for f in "${fold[@]}"; do
+        [ "$f" = "-f" ] && continue
+        [ -f "$f" ] && { bname="$(echo "$f" | sed 's#/#_#g')"; cp "$f" "$BACKUP_DIR/$bname"; }
+      done
+    fi
+
+    run docker compose -p "$P" --project-directory "$D" "${fold[@]}" down
+    run mv "$D" "$D2"
+    if [ "$DRY_RUN" = 1 ]; then
+      c_dim "  [dry] sed '$D' → '$D2' в compose-файлах ${fnew[*]}"
+    else
+      for f in "${fnew[@]}"; do [ "$f" = "-f" ] && continue; replace_path "$f" "$D" "$D2"; done
+    fi
+    run docker compose -p "$N" --project-directory "$D2" "${fnew[@]}" up -d
+
+    echo "$N|$P|$D2|$D|$cfgs" >>"$PROJ_STATE_FILE.tmp"
+  done
+
+  if [ "$DRY_RUN" = 1 ]; then
+    rm -f "$PROJ_STATE_FILE.tmp"
+    echo; c_yel "Это был dry-run — на сервере ничего не изменилось."
+    return
+  fi
+  cat "$PROJ_STATE_FILE.tmp" >>"$PROJ_STATE_FILE"; rm -f "$PROJ_STATE_FILE.tmp"
+  echo
+  c_grn "Готово. Проверка:"
+  c_dim "  docker ps -a --format 'table {{.Names}}\t{{.Label \"com.docker.compose.project\"}}\t{{.Label \"com.docker.compose.project.working_dir\"}}'"
+}
+
+cmd_project_restore() {
+  [ -f "$PROJ_STATE_FILE" ] || die "нет состояния проектов ($PROJ_STATE_FILE)"
+  [ "$DRY_RUN" = 1 ] && c_yel "DRY-RUN: команды только показываются."
+  local N P D2 D cfgs f
+  while IFS='|' read -r N P D2 D cfgs; do
+    [ -z "$N" ] && continue
+    local -a fcur=() forig=()
+    local OLDIFS="$IFS"; IFS=','
+    for f in $cfgs; do
+      f="$(trim "$f")"; [ -z "$f" ] && continue
+      case "$f" in /*) ;; *) f="$D/$f" ;; esac
+      forig+=( -f "$f" ); fcur+=( -f "${f/#$D/$D2}" )
+    done
+    IFS="$OLDIFS"
+    c_grn "· проект $N → $P,  $D2 → $D"
+    run docker compose -p "$N" --project-directory "$D2" "${fcur[@]}" down
+    run mv "$D2" "$D"
+    if [ "$DRY_RUN" != 1 ]; then
+      for f in "${forig[@]}"; do [ "$f" = "-f" ] && continue; replace_path "$f" "$D2" "$D"; done
+    fi
+    run docker compose -p "$P" --project-directory "$D" "${forig[@]}" up -d
+  done <"$PROJ_STATE_FILE"
+  [ "$DRY_RUN" = 1 ] && { echo; c_yel "Это был dry-run."; return; }
+  rm -f "$PROJ_STATE_FILE"
+  echo; c_grn "Откат проектов завершён."
+}
+
 usage() {
   cat <<'EOF'
 relabel.sh — маскировка имён docker-контейнеров
@@ -359,10 +487,14 @@ relabel.sh — маскировка имён docker-контейнеров
   relabel restore          откатить имена контейнеров
   relabel images           замаскировать имена образов (ретег + пересоздание)
   relabel images-restore   откатить имена образов
+  relabel project [--dry-run]  переименовать compose-проект+каталог+сеть (шаг B)
+  relabel project-restore [--dry-run]  откатить проекты/каталоги
   relabel ps               показать процессы внутри контейнеров
 
-Порядок: сначала `apply` (имена контейнеров), затем `images` (образы).
-Карта имён — в names.conf. Бэкапы compose-файлов и карты отката — в .state/.
+Порядок: apply (контейнеры) → images (образы) → project (проекты/каталоги).
+`project` делает down+up (короткий простой); сначала прогоните с --dry-run.
+Проекты с именованными томами пропускаются автоматически (защита данных).
+Карта имён — в names.conf. Бэкапы и карты отката — в .state/.
 EOF
 }
 
@@ -375,6 +507,8 @@ case "${1:-}" in
   restore)         cmd_restore ;;
   images)          cmd_images ;;
   images-restore)  cmd_images_restore ;;
+  project)         [ "${2:-}" = "--dry-run" ] && DRY_RUN=1; cmd_project ;;
+  project-restore) [ "${2:-}" = "--dry-run" ] && DRY_RUN=1; cmd_project_restore ;;
   ps)              cmd_ps ;;
   ""|-h|--help|help) usage ;;
   *) die "неизвестная команда: $1 (см. --help)" ;;
