@@ -11,21 +11,28 @@
 ## Установка на сервер
 
 ```bash
-# скопировать папку на сервер (пример)
-scp -r infra-relabel root@SERVER:/opt/infra-relabel
-ssh root@SERVER
+git clone https://github.com/ASTORKA/infra-relabel /opt/infra-relabel
 cd /opt/infra-relabel
-chmod +x relabel.sh
+./install.sh            # ставит команду `relabel` в /usr/local/bin
 ```
+
+После этого скрипт вызывается из любого каталога просто как `relabel`.
+`install.sh` создаёт симлинк `/usr/local/bin/relabel → relabel.sh`; конфиг
+(`names.conf`) и состояние (`.state/`) остаются в каталоге репозитория.
+
+Можно поставить в другой каталог: `PREFIX=$HOME/bin ./install.sh`.
+Удалить: `rm -f /usr/local/bin/relabel`.
 
 ## Использование
 
 ```bash
-./relabel.sh status     # что есть сейчас и что уже замаскировано
-./relabel.sh apply      # применить маскировку (имена из names.conf)
-./relabel.sh restore    # откатить к исходным именам
-./relabel.sh ps         # показать процессы внутри контейнеров
+relabel status     # что есть сейчас и что уже замаскировано
+relabel apply      # применить маскировку (имена из names.conf)
+relabel restore    # откатить к исходным именам
+relabel ps         # показать процессы внутри контейнеров
 ```
+
+> Без установки можно и напрямую: `./relabel.sh status` из каталога репы.
 
 После `apply` проверьте:
 

@@ -19,7 +19,15 @@
 #
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Разрешаем симлинки, чтобы SCRIPT_DIR указывал на реальный каталог репозитория
+# (где лежат names.conf и .state/), даже если вызвали через /usr/local/bin/relabel.
+_src="${BASH_SOURCE[0]}"
+while [ -h "$_src" ]; do
+  _dir="$(cd -P "$(dirname "$_src")" && pwd)"
+  _src="$(readlink "$_src")"
+  case "$_src" in /*) ;; *) _src="$_dir/$_src" ;; esac
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$_src")" && pwd)"
 CONF="${RELABEL_CONF:-$SCRIPT_DIR/names.conf}"
 STATE_DIR="$SCRIPT_DIR/.state"
 STATE_FILE="$STATE_DIR/applied.map"      # строки: decoy|orig|compose_file
