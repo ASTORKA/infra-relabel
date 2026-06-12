@@ -31,6 +31,7 @@ SCRIPT_DIR="$(cd -P "$(dirname "$_src")" && pwd)"
 CONF="${RELABEL_CONF:-$SCRIPT_DIR/names.conf}"
 STATE_DIR="$SCRIPT_DIR/.state"
 STATE_FILE="$STATE_DIR/applied.map"      # строки: decoy|orig|compose_file
+IMG_STATE_FILE="$STATE_DIR/images.map"   # строки: decoy_img|orig_img|file|svc|wd|cfgs
 BACKUP_DIR="$STATE_DIR/backups"
 
 mkdir -p "$STATE_DIR" "$BACKUP_DIR"
@@ -61,6 +62,34 @@ replace_container_name() {
   sed -E "s/(container_name:[[:space:]]*[\"']?)${from}([\"']?[[:space:]]*)\$/\1${to}\2/" "$file" >"$tmp"
   cat "$tmp" >"$file"
   rm -f "$tmp"
+}
+
+# Заменить значение image: в файле (сохраняя кавычки/отступ).
+# $1=file $2=искомый_образ $3=новый_образ
+replace_image() {
+  local file="$1" from="$2" to="$3" tmp
+  tmp="$(mktemp)"
+  # делимитер | — в именах образов его нет, а / экранировать не нужно
+  sed -E "s|(image:[[:space:]]*[\"']?)${from}([\"']?[[:space:]]*)\$|\1${to}\2|" "$file" >"$tmp"
+  cat "$tmp" >"$file"
+  rm -f "$tmp"
+}
+
+# Пересоздать один сервис через его же compose-файл(ы), не трогая зависимости.
+# $1=service $2=working_dir $3=config_files (через запятую)
+compose_up() {
+  local svc="$1" wd="$2" cfgs="$3" compose f
+  compose="$(compose_cmd)"
+  [ -n "$compose" ] || die "нужен docker compose v2 (docker compose ...)"
+  local -a fargs=()
+  local OLDIFS="$IFS"; IFS=','
+  for f in $cfgs; do
+    f="$(trim "$f")"; [ -z "$f" ] && continue
+    case "$f" in /*) ;; *) f="$wd/$f" ;; esac
+    fargs+=( -f "$f" )
+  done
+  IFS="$OLDIFS"
+  ( cd "$wd" && $compose "${fargs[@]}" up -d --no-deps "$svc" )
 }
 
 # Вставить container_name под сервис, если его в файле нет.
@@ -245,17 +274,95 @@ cmd_ps() {
   c_dim "Подсказка: процессы хоста — ps -ef ; дерево — pstree -p ; вживую — htop"
 }
 
+# Маскировка образов: ретег + правка image: в compose + пересоздание сервиса.
+# Имя decoy-образа берём из карты: <маска>:<тег_исходного>.
+cmd_images() {
+  load_conf
+  : >"$IMG_STATE_FILE.tmp"
+  local i orig decoy cur img tag decoy_img file svc wd cfgs bname
+  for i in "${!ORIG_LIST[@]}"; do
+    orig="${ORIG_LIST[$i]}"; decoy="${DECOY_LIST[$i]}"
+    cur="$(resolve_container "$orig" "$decoy" || true)"
+    if [ -z "$cur" ]; then c_yel "· $orig/$decoy — нет контейнера, пропуск"; continue; fi
+
+    img="$(docker inspect -f '{{.Config.Image}}' "$cur" 2>/dev/null || true)"
+    [ -z "$img" ] && { c_yel "· $cur — не удалось определить образ"; continue; }
+    case "$img" in *:*) tag="${img##*:}" ;; *) tag="latest" ;; esac
+    decoy_img="${decoy}:${tag}"
+
+    if [ "$img" = "$decoy_img" ]; then
+      c_dim "· $cur образ уже $decoy_img"
+      file="$(compose_file_of "$cur")"
+      wd="$(docker_label "$cur" com.docker.compose.project.working_dir)"
+      svc="$(docker_label "$cur" com.docker.compose.service)"
+      cfgs="$(docker_label "$cur" com.docker.compose.project.config_files)"
+      echo "$decoy_img|$img|${file:-}|${svc:-}|${wd:-}|${cfgs:-}" >>"$IMG_STATE_FILE.tmp"
+      continue
+    fi
+
+    docker tag "$img" "$decoy_img"
+
+    file="$(compose_file_of "$cur")"
+    wd="$(docker_label "$cur" com.docker.compose.project.working_dir)"
+    svc="$(docker_label "$cur" com.docker.compose.service)"
+    cfgs="$(docker_label "$cur" com.docker.compose.project.config_files)"
+
+    if [ -n "$file" ] && [ -f "$file" ] && [ -n "$svc" ] && [ -n "$wd" ]; then
+      bname="$(echo "$file" | sed 's#/#_#g')"
+      [ -f "$BACKUP_DIR/$bname" ] || cp "$file" "$BACKUP_DIR/$bname"
+      if grep -Eq "image:[[:space:]]*[\"']?${img}[\"']?" "$file"; then
+        replace_image "$file" "$img" "$decoy_img"
+      else
+        c_yel "  ! не нашёл строку image: $img в $file — пересоздам с текущим файлом"
+      fi
+      c_dim "  пересоздаю сервис $svc ($decoy_img)…"
+      compose_up "$svc" "$wd" "$cfgs"
+      c_grn "· $orig: $img → $decoy_img"
+    else
+      c_yel "  ! $cur не из docker compose — образ перетегирован ($decoy_img), но контейнер не пересоздан"
+    fi
+    echo "$decoy_img|$img|${file:-}|${svc:-}|${wd:-}|${cfgs:-}" >>"$IMG_STATE_FILE.tmp"
+  done
+  mv "$IMG_STATE_FILE.tmp" "$IMG_STATE_FILE"
+  echo
+  c_grn "Готово. Проверка: docker ps --format '{{.Names}}\t{{.Image}}'"
+}
+
+cmd_images_restore() {
+  [ -f "$IMG_STATE_FILE" ] || die "нет состояния образов ($IMG_STATE_FILE) — нечего откатывать"
+  local decoy_img orig_img file svc wd cfgs
+  while IFS='|' read -r decoy_img orig_img file svc wd cfgs; do
+    [ -z "$decoy_img" ] && continue
+    if [ -n "$file" ] && [ -f "$file" ]; then
+      if grep -Eq "image:[[:space:]]*[\"']?${decoy_img}[\"']?" "$file"; then
+        replace_image "$file" "$decoy_img" "$orig_img"
+      fi
+    fi
+    if [ -n "$svc" ] && [ -n "$wd" ]; then
+      compose_up "$svc" "$wd" "$cfgs" || true
+    fi
+    # снимаем decoy-тег (сам образ остаётся под исходным именем)
+    docker rmi "$decoy_img" >/dev/null 2>&1 || true
+    c_grn "· $decoy_img → $orig_img"
+  done <"$IMG_STATE_FILE"
+  rm -f "$IMG_STATE_FILE"
+  echo
+  c_grn "Откат образов завершён."
+}
+
 usage() {
   cat <<'EOF'
 relabel.sh — маскировка имён docker-контейнеров
 
-  ./relabel.sh status     показать текущие имена и состояние маскировки
-  ./relabel.sh apply       применить имена из names.conf
-  ./relabel.sh restore     откатить к исходным именам
-  ./relabel.sh ps          показать процессы внутри контейнеров
+  relabel status           показать текущие имена и состояние маскировки
+  relabel apply            применить имена контейнеров из names.conf
+  relabel restore          откатить имена контейнеров
+  relabel images           замаскировать имена образов (ретег + пересоздание)
+  relabel images-restore   откатить имена образов
+  relabel ps               показать процессы внутри контейнеров
 
-Карта имён — в names.conf. Бэкапы compose-файлов и карта отката
-складываются в .state/ (не коммитятся).
+Порядок: сначала `apply` (имена контейнеров), затем `images` (образы).
+Карта имён — в names.conf. Бэкапы compose-файлов и карты отката — в .state/.
 EOF
 }
 
@@ -263,10 +370,12 @@ EOF
 
 need_docker
 case "${1:-}" in
-  status)  cmd_status ;;
-  apply)   cmd_apply ;;
-  restore) cmd_restore ;;
-  ps)      cmd_ps ;;
+  status)          cmd_status ;;
+  apply)           cmd_apply ;;
+  restore)         cmd_restore ;;
+  images)          cmd_images ;;
+  images-restore)  cmd_images_restore ;;
+  ps)              cmd_ps ;;
   ""|-h|--help|help) usage ;;
   *) die "неизвестная команда: $1 (см. --help)" ;;
 esac
