@@ -138,3 +138,38 @@ cd /opt/app-worker  && docker compose ps    # агент
   не меняется. Единственный остаточный «remnawave» в `ps aux`.
 - Проект `caddy` и тома `caddy_caddy_*` — `caddy` нейтрален, тома с TLS не трогаем.
 - Открытые порты и трафик — это уровень DPI, маскировкой имён не скрывается.
+
+## Ускорение/защита ноды (`accelerator/`)
+
+В каталоге [`accelerator/`](accelerator/) — вендоренный и **де-брендированный**
+форк [jestivald/node-accelerator](https://github.com/jestivald/node-accelerator):
+оптимизация ядра/сети (XanMod+BBRv3, sysctl, RPS/RFS), nftables-фаервол
+(antiscan, anti-flood, CrowdSec) и read-only диагностика ноды.
+
+Он работает на уровне хоста (не трогает имена контейнеров), но создавал свои
+host-видимые артефакты с брендингом — они переименованы под нашу нейтральную
+схему, чтобы не вскрывать VPN, который прячет `relabel`:
+
+| Артефакт | Было | Стало |
+|---|---|---|
+| systemd-юниты | `na-firewall`, `na-fleet-sync`, … | `sys-firewall`, `sys-peers-sync`, `sys-blocklist`, `sys-ctguard`, `sys-rps` |
+| Description юнита | «node-accelerator … Remnawave /api/nodes» | «system firewall», «peer allowlist sync» |
+| nftables-таблица | `inet na_filter`, сеты `na_fleet_*` | `inet sysguard`, `sys_peers_*` |
+| пути | `/etc/node-accelerator`, `/var/lib/…` | `/etc/sysguard`, `/var/lib/sysguard` |
+| env / файл | `REMNAWAVE_URL/TOKEN`, `fleet.env` | `PANEL_URL/PANEL_TOKEN`, `peers.env` |
+| sbin-утилиты | `na-fw-status`, … | `sys-fw-status`, `sys-fw-top-talkers` |
+
+Запуск (на сервере ноды, от root):
+
+```bash
+cd /opt/infra-relabel/accelerator
+sudo bash install.sh                 # интерактивное меню
+sudo bash install.sh diagnose        # 🩺 read-only отчёт (безопасно начать с него)
+sudo bash install.sh optimize        # ⚡ XanMod+BBRv3 + sysctl (нужен reboot)
+sudo bash install.sh protect         # 🛡 nftables + CrowdSec
+sudo bash install.sh rollback all    # полный откат
+```
+
+> ⚠️ `protect` ставит firewall с авто-сейфти-таймером (`sys-fw-safety`) от
+> самоблокировки SSH; `optimize` ставит XanMod-ядро (нужна перезагрузка).
+> Подробности и все ENV-параметры — в [accelerator/README.md](accelerator/README.md).
