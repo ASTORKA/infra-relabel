@@ -34,6 +34,7 @@ STATE_FILE="$STATE_DIR/applied.map"      # строки: decoy|orig|compose_file
 IMG_STATE_FILE="$STATE_DIR/images.map"   # строки: decoy_img|orig_img|file|svc|wd|cfgs
 PROJ_STATE_FILE="$STATE_DIR/projects.map" # строки: N|P|D2|D|cfgs
 CORE_STATE_FILE="$STATE_DIR/core.map"     # строки: newtag|base|file|svc|wd|cfgs
+HOSTPATH_STATE_FILE="$STATE_DIR/hostpaths.map" # строки: cur|oldhost|newhost|file|svc|wd|cfgs
 BACKUP_DIR="$STATE_DIR/backups"
 
 DRY_RUN=0   # 1 — только показывать команды, ничего не выполнять
@@ -112,7 +113,31 @@ compose_up() {
     fargs+=( -f "$f" )
   done
   IFS="$OLDIFS"
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '  \033[2m[dry] (cd %q && %s' "$wd" "$compose"
+    printf ' %q' "${fargs[@]}" up -d --no-deps "$svc"; printf ')\033[0m\n'
+    return 0
+  fi
   ( cd "$wd" && $compose "${fargs[@]}" up -d --no-deps "$svc" )
+}
+
+# Найти маскирующее имя по исходному (из загруженной карты). Пусто, если нет.
+decoy_for() {
+  local key="$1" i
+  for i in "${!ORIG_LIST[@]}"; do
+    [ "${ORIG_LIST[$i]}" = "$key" ] && { printf '%s' "${DECOY_LIST[$i]}"; return 0; }
+  done
+  return 1
+}
+
+# Заменить host-часть bind-монтирования (часть до первого ":") в compose.
+# $1=file $2=старый_host_путь $3=новый_host_путь
+replace_bind_host() {
+  local file="$1" oldhost="$2" newhost="$3" tmp
+  tmp="$(mktemp)"
+  sed -E "s#(-[[:space:]]*[\"']?)${oldhost}:#\1${newhost}:#" "$file" >"$tmp"
+  cat "$tmp" >"$file"
+  rm -f "$tmp"
 }
 
 # Вставить container_name под сервис, если его в файле нет.
@@ -231,6 +256,11 @@ cmd_apply() {
     fi
 
     file="$(compose_file_of "$cur")"
+    if [ "$DRY_RUN" = 1 ]; then
+      c_grn "· $orig → $decoy  (container_name в ${file:-—})"
+      run docker rename "$cur" "$decoy"
+      continue
+    fi
     if [ -n "$file" ] && [ -f "$file" ]; then
       # бэкап файла (один раз на файл)
       local bname; bname="$(echo "$file" | sed 's#/#_#g')"
@@ -254,6 +284,7 @@ cmd_apply() {
     c_grn "· $orig → $decoy"
     echo "$decoy|$orig|${file:-}" >>"$STATE_FILE.tmp"
   done
+  if [ "$DRY_RUN" = 1 ]; then rm -f "$STATE_FILE.tmp"; echo; c_yel "Это был dry-run."; return; fi
   mv "$STATE_FILE.tmp" "$STATE_FILE"
   echo
   c_grn "Готово. Проверка: docker ps --format '{{.Names}}\t{{.Image}}'"
@@ -261,9 +292,15 @@ cmd_apply() {
 
 cmd_restore() {
   [ -f "$STATE_FILE" ] || die "нет сохранённого состояния ($STATE_FILE) — нечего откатывать"
+  [ "$DRY_RUN" = 1 ] && c_yel "DRY-RUN: команды только показываются."
   local decoy orig file
   while IFS='|' read -r decoy orig file; do
     [ -z "$decoy" ] && continue
+    if [ "$DRY_RUN" = 1 ]; then
+      c_grn "· $decoy → $orig"
+      run docker rename "$decoy" "$orig"
+      continue
+    fi
     if [ -n "$file" ] && [ -f "$file" ]; then
       if grep -Eq "container_name:[[:space:]]*[\"']?${decoy}[\"']?" "$file"; then
         replace_container_name "$file" "$decoy" "$orig"
@@ -278,6 +315,7 @@ cmd_restore() {
       c_yel "· $decoy — контейнер не найден"
     fi
   done <"$STATE_FILE"
+  [ "$DRY_RUN" = 1 ] && { echo; c_yel "Это был dry-run."; return; }
   rm -f "$STATE_FILE"
   echo
   c_grn "Откат завершён."
@@ -301,7 +339,7 @@ cmd_ps() {
 # Имя decoy-образа берём из карты: <маска>:<тег_исходного>.
 cmd_images() {
   load_conf
-  : >"$IMG_STATE_FILE.tmp"
+  [ "$DRY_RUN" != 1 ] && touch "$IMG_STATE_FILE"
   local i orig decoy cur img tag decoy_img file svc wd cfgs bname
   for i in "${!ORIG_LIST[@]}"; do
     orig="${ORIG_LIST[$i]}"; decoy="${DECOY_LIST[$i]}"
@@ -310,26 +348,27 @@ cmd_images() {
 
     img="$(docker inspect -f '{{.Config.Image}}' "$cur" 2>/dev/null || true)"
     [ -z "$img" ] && { c_yel "· $cur — не удалось определить образ"; continue; }
+
+    # уже замаскирован, если образ начинается с маски (ловит и :latest, и :core)
+    case "$img" in
+      "${decoy}:"*|"${decoy}") c_dim "· $cur образ уже замаскирован ($img)"; continue ;;
+    esac
+
     case "$img" in *:*) tag="${img##*:}" ;; *) tag="latest" ;; esac
     decoy_img="${decoy}:${tag}"
-
-    if [ "$img" = "$decoy_img" ]; then
-      c_dim "· $cur образ уже $decoy_img"
-      file="$(compose_file_of "$cur")"
-      wd="$(docker_label "$cur" com.docker.compose.project.working_dir)"
-      svc="$(docker_label "$cur" com.docker.compose.service)"
-      cfgs="$(docker_label "$cur" com.docker.compose.project.config_files)"
-      echo "$decoy_img|$img|${file:-}|${svc:-}|${wd:-}|${cfgs:-}" >>"$IMG_STATE_FILE.tmp"
-      continue
-    fi
-
-    docker tag "$img" "$decoy_img"
-
     file="$(compose_file_of "$cur")"
     wd="$(docker_label "$cur" com.docker.compose.project.working_dir)"
     svc="$(docker_label "$cur" com.docker.compose.service)"
     cfgs="$(docker_label "$cur" com.docker.compose.project.config_files)"
 
+    if [ "$DRY_RUN" = 1 ]; then
+      c_grn "· $orig: $img → $decoy_img  (ретег + пересоздание $svc)"
+      run docker tag "$img" "$decoy_img"
+      compose_up "$svc" "$wd" "$cfgs"
+      continue
+    fi
+
+    docker tag "$img" "$decoy_img"
     if [ -n "$file" ] && [ -f "$file" ] && [ -n "$svc" ] && [ -n "$wd" ]; then
       bname="$(echo "$file" | sed 's#/#_#g')"
       [ -f "$BACKUP_DIR/$bname" ] || cp "$file" "$BACKUP_DIR/$bname"
@@ -344,9 +383,9 @@ cmd_images() {
     else
       c_yel "  ! $cur не из docker compose — образ перетегирован ($decoy_img), но контейнер не пересоздан"
     fi
-    echo "$decoy_img|$img|${file:-}|${svc:-}|${wd:-}|${cfgs:-}" >>"$IMG_STATE_FILE.tmp"
+    echo "$decoy_img|$img|${file:-}|${svc:-}|${wd:-}|${cfgs:-}" >>"$IMG_STATE_FILE"
   done
-  mv "$IMG_STATE_FILE.tmp" "$IMG_STATE_FILE"
+  [ "$DRY_RUN" = 1 ] && { echo; c_yel "Это был dry-run."; return; }
   echo
   c_grn "Готово. Проверка: docker ps --format '{{.Names}}\t{{.Image}}'"
 }
@@ -499,6 +538,11 @@ cmd_core() {
     if ! docker exec "$cur" sh -c 'test -e /usr/local/bin/rw-core -o -e /usr/local/bin/xray' >/dev/null 2>&1; then
       continue
     fi
+    # уже замаскировано? (бинарь netd на месте) — пропуск, без лишней пересборки
+    if docker exec "$cur" sh -c 'test -e /usr/local/bin/netd' >/dev/null 2>&1; then
+      c_dim "· $cur: ядро уже замаскировано (netd)"
+      continue
+    fi
 
     base="$(docker inspect -f '{{.Config.Image}}' "$cur")"
     case "$base" in *:*) newtag="${base%:*}:core" ;; *) newtag="${base}:core" ;; esac
@@ -583,23 +627,132 @@ cmd_core_restore() {
   echo; c_grn "Откат ядра завершён."
 }
 
+# Шаг C: маскировка host-путей bind-монтирований, чьё имя выдаёт VPN
+# (например /var/log/remnanode). Меняется только host-часть; путь внутри
+# контейнера остаётся прежним, поэтому приложение не ломается.
+cmd_hostpaths() {
+  load_conf
+  [ "$DRY_RUN" = 1 ] && c_yel "DRY-RUN: команды только показываются."
+  touch "$HOSTPATH_STATE_FILE"; : >"$HOSTPATH_STATE_FILE.tmp"
+
+  local i orig decoy cur file svc wd cfgs binds src base dec newsrc bname changed
+  for i in "${!ORIG_LIST[@]}"; do
+    orig="${ORIG_LIST[$i]}"; decoy="${DECOY_LIST[$i]}"
+    cur="$(resolve_container "$orig" "$decoy" || true)"
+    [ -z "$cur" ] && continue
+    file="$(compose_file_of "$cur")"
+    svc="$(docker_label "$cur" com.docker.compose.service)"
+    wd="$(docker_label "$cur" com.docker.compose.project.working_dir)"
+    cfgs="$(docker_label "$cur" com.docker.compose.project.config_files)"
+
+    binds="$(docker inspect -f '{{range .Mounts}}{{if eq .Type "bind"}}{{.Source}}{{"\n"}}{{end}}{{end}}' "$cur" 2>/dev/null || true)"
+    changed=0
+    while IFS= read -r src; do
+      [ -z "$src" ] && continue
+      base="$(basename "$src")"
+      dec="$(decoy_for "$base" || true)"   # host-путь палевный, только если его имя = исходное имя из карты
+      [ -z "$dec" ] && continue
+      newsrc="$(dirname "$src")/$dec"
+      [ "$src" = "$newsrc" ] && continue
+      c_grn "· $cur: host-путь $src → $newsrc (внутри контейнера путь не меняется)"
+      if [ "$DRY_RUN" = 1 ]; then
+        c_dim "  [dry] mkdir $newsrc; перенос данных; правка bind в ${file:-?}; пересоздать $svc; убрать $src"
+        echo "$cur|$src|$newsrc|${file:-}|${svc:-}|${wd:-}|${cfgs:-}" >>"$HOSTPATH_STATE_FILE.tmp"
+        continue
+      fi
+      mkdir -p "$newsrc"
+      if [ -d "$src" ] && [ -n "$(ls -A "$src" 2>/dev/null)" ]; then cp -a "$src/." "$newsrc/" 2>/dev/null || true; fi
+      if [ -n "$file" ] && [ -f "$file" ]; then
+        bname="$(echo "$file" | sed 's#/#_#g')"
+        [ -f "$BACKUP_DIR/$bname" ] || cp "$file" "$BACKUP_DIR/$bname"
+        replace_bind_host "$file" "$src" "$newsrc"
+      fi
+      changed=1
+      echo "$cur|$src|$newsrc|${file:-}|${svc:-}|${wd:-}|${cfgs:-}" >>"$HOSTPATH_STATE_FILE.tmp"
+      # запомним старый каталог для зачистки после пересоздания
+      echo "$src" >>"$HOSTPATH_STATE_FILE.cleanup"
+    done <<< "$binds"
+
+    if [ "$changed" = 1 ] && [ "$DRY_RUN" != 1 ]; then
+      compose_up "$svc" "$wd" "$cfgs"
+    fi
+  done
+
+  if [ "$DRY_RUN" = 1 ]; then rm -f "$HOSTPATH_STATE_FILE.tmp"; echo; c_yel "Это был dry-run."; return; fi
+  # зачистка опустевших старых каталогов (только если пусты)
+  if [ -f "$HOSTPATH_STATE_FILE.cleanup" ]; then
+    while IFS= read -r src; do [ -n "$src" ] && rmdir "$src" 2>/dev/null || true; done <"$HOSTPATH_STATE_FILE.cleanup"
+    rm -f "$HOSTPATH_STATE_FILE.cleanup"
+  fi
+  cat "$HOSTPATH_STATE_FILE.tmp" >>"$HOSTPATH_STATE_FILE"; rm -f "$HOSTPATH_STATE_FILE.tmp"
+  echo; c_grn "Готово. Проверка: ls /var/log | grep -i remna  (должно быть пусто)"
+}
+
+cmd_hostpaths_restore() {
+  [ -f "$HOSTPATH_STATE_FILE" ] || die "нет состояния host-путей ($HOSTPATH_STATE_FILE)"
+  [ "$DRY_RUN" = 1 ] && c_yel "DRY-RUN: команды только показываются."
+  local cur oldhost newhost file svc wd cfgs
+  while IFS='|' read -r cur oldhost newhost file svc wd cfgs; do
+    [ -z "$cur" ] && continue
+    c_grn "· $cur: host-путь $newhost → $oldhost"
+    if [ "$DRY_RUN" = 1 ]; then c_dim "  [dry] вернуть bind и каталог, пересоздать $svc"; continue; fi
+    mkdir -p "$oldhost"
+    if [ -d "$newhost" ] && [ -n "$(ls -A "$newhost" 2>/dev/null)" ]; then cp -a "$newhost/." "$oldhost/" 2>/dev/null || true; fi
+    if [ -n "$file" ] && [ -f "$file" ]; then replace_bind_host "$file" "$newhost" "$oldhost"; fi
+    [ -n "$svc" ] && [ -n "$wd" ] && compose_up "$svc" "$wd" "$cfgs" || true
+    rmdir "$newhost" 2>/dev/null || true
+  done <"$HOSTPATH_STATE_FILE"
+  [ "$DRY_RUN" = 1 ] && { echo; c_yel "Это был dry-run."; return; }
+  rm -f "$HOSTPATH_STATE_FILE"
+  echo; c_grn "Откат host-путей завершён."
+}
+
+# Оркестратор: всё одной командой, в правильном порядке.
+cmd_all() {
+  c_grn "════ A1: имена контейнеров ════"; cmd_apply
+  c_grn "════ A2: образы ════";            cmd_images
+  c_grn "════ B: проекты/каталоги/сети ════"; cmd_project
+  c_grn "════ D: ядро (rw-core/xray → netd) ════"; cmd_core
+  c_grn "════ C: host-пути логов ════";     cmd_hostpaths
+  echo
+  if [ "$DRY_RUN" = 1 ]; then c_yel "DRY-RUN завершён — на сервере ничего не изменилось."; else
+    c_grn "Всё применено. Проверь: docker ps ; нода ОНЛАЙН в панели."
+  fi
+}
+
+# Полный откат в обратном порядке (пути синхронизируются по шагам).
+cmd_all_restore() {
+  c_grn "════ откат ядра ════";    [ -f "$CORE_STATE_FILE" ] && cmd_core_restore || c_dim "· ядро не маскировалось"
+  c_grn "════ откат проектов ════"; [ -f "$PROJ_STATE_FILE" ] && cmd_project_restore || c_dim "· проекты не менялись"
+  c_grn "════ откат образов ════";  [ -f "$IMG_STATE_FILE" ] && cmd_images_restore || c_dim "· образы не менялись"
+  c_grn "════ откат host-путей ════"; [ -f "$HOSTPATH_STATE_FILE" ] && cmd_hostpaths_restore || c_dim "· host-пути не менялись"
+  c_grn "════ откат имён контейнеров ════"; [ -f "$STATE_FILE" ] && cmd_restore || c_dim "· имена не менялись"
+  echo
+  [ "$DRY_RUN" = 1 ] && c_yel "DRY-RUN завершён." || c_grn "Полный откат завершён."
+}
+
 usage() {
   cat <<'EOF'
-relabel.sh — маскировка имён docker-контейнеров
+relabel.sh — маскировка имён docker-контейнеров VPN-ноды
 
-  relabel status           показать текущие имена и состояние маскировки
-  relabel apply            применить имена контейнеров из names.conf
-  relabel restore          откатить имена контейнеров
-  relabel images           замаскировать имена образов (ретег + пересоздание)
-  relabel images-restore   откатить имена образов
-  relabel project [--dry-run]  переименовать compose-проект+каталог+сеть (шаг B)
-  relabel project-restore [--dry-run]  откатить проекты/каталоги
-  relabel core [--dry-run]     замаскировать имя процесса ядра (rw-core/xray → netd)
-  relabel core-restore [--dry-run]  откатить маскировку ядра
-  relabel ps               показать процессы внутри контейнеров
+ОДНОЙ КОМАНДОЙ:
+  relabel all [--dry-run]      применить ВСЁ (A→B→C→D) в правильном порядке
+  relabel restore-all [--dry-run]  откатить ВСЁ
 
-Порядок: apply (контейнеры) → images (образы) → project (проекты/каталоги).
-`project` делает down+up (короткий простой); сначала прогоните с --dry-run.
+ПО ШАГАМ:
+  relabel status               показать текущее состояние маскировки
+  relabel apply  [--dry-run]   A1: имена контейнеров (из names.conf)
+  relabel images [--dry-run]   A2: имена образов (ретег + пересоздание)
+  relabel project [--dry-run]  B:  проект + каталог + сеть compose
+  relabel hostpaths [--dry-run] C: host-пути логов (/var/log/remnanode → …)
+  relabel core   [--dry-run]   D:  имя процесса ядра (rw-core/xray → netd)
+  relabel ps                   показать процессы внутри контейнеров
+
+ОТКАТ ПО ШАГАМ:  restore / images-restore / project-restore /
+                 hostpaths-restore / core-restore   (все принимают --dry-run)
+
+Совет: всегда сначала `relabel all --dry-run` — покажет все команды,
+ничего не меняя. `all` делает down+up (короткий простой ноды).
 Проекты с именованными томами пропускаются автоматически (защита данных).
 Карта имён — в names.conf. Бэкапы и карты отката — в .state/.
 EOF
@@ -608,17 +761,22 @@ EOF
 # --- точка входа ------------------------------------------------------------
 
 need_docker
+[ "${2:-}" = "--dry-run" ] && DRY_RUN=1
 case "${1:-}" in
-  status)          cmd_status ;;
-  apply)           cmd_apply ;;
-  restore)         cmd_restore ;;
-  images)          cmd_images ;;
-  images-restore)  cmd_images_restore ;;
-  project)         [ "${2:-}" = "--dry-run" ] && DRY_RUN=1; cmd_project ;;
-  project-restore) [ "${2:-}" = "--dry-run" ] && DRY_RUN=1; cmd_project_restore ;;
-  core)            [ "${2:-}" = "--dry-run" ] && DRY_RUN=1; cmd_core ;;
-  core-restore)    [ "${2:-}" = "--dry-run" ] && DRY_RUN=1; cmd_core_restore ;;
-  ps)              cmd_ps ;;
+  status)            cmd_status ;;
+  all)               cmd_all ;;
+  restore-all)       cmd_all_restore ;;
+  apply)             cmd_apply ;;
+  restore)           cmd_restore ;;
+  images)            cmd_images ;;
+  images-restore)    cmd_images_restore ;;
+  project)           cmd_project ;;
+  project-restore)   cmd_project_restore ;;
+  hostpaths)         cmd_hostpaths ;;
+  hostpaths-restore) cmd_hostpaths_restore ;;
+  core)              cmd_core ;;
+  core-restore)      cmd_core_restore ;;
+  ps)                cmd_ps ;;
   ""|-h|--help|help) usage ;;
   *) die "неизвестная команда: $1 (см. --help)" ;;
 esac

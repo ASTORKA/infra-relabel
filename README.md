@@ -1,69 +1,80 @@
 # infra-relabel
 
-Скрипт, который переименовывает docker-контейнеры VPN-ноды под нейтральные
-имена, чтобы хостинг в `docker ps` и метках compose не видел характерных
-названий (`remnanode`, `caddy-selfsteal`, `remnawave-node-agent`).
+Маскирует VPN-ноду **Remnawave** на сервере под обычный веб-стек, чтобы хостинг
+по `docker ps` / `ps` / `ls /opt` / меткам compose не опознавал VPN-сервис.
 
-Делает это **без простоя**: правит `container_name:` в compose-файле
-(с бэкапом) и переименовывает живой контейнер через `docker rename`.
-Полностью обратимо.
+Делает это **обратимо** и по возможности без простоя: правит `container_name`,
+теги образов, имя compose-проекта, каталог деплоя, сеть, host-пути логов и имя
+процесса ядра. Каждый шаг можно откатить.
 
-## Установка на сервер
+```
+remnanode            → app-backend     (контейнер, проект, /opt/app-backend)
+remnawave-node-agent → app-worker      (контейнер, проект, /opt/app-worker)
+caddy-selfsteal      → web-frontend    (контейнер; проект caddy не трогаем — нейтрален)
+образ remnawave/node → app-backend:latest
+процесс rw-core/xray → netd
+```
+
+## Установка
 
 ```bash
 git clone https://github.com/ASTORKA/infra-relabel /opt/infra-relabel
 cd /opt/infra-relabel
-./install.sh            # ставит команду `relabel` в /usr/local/bin
+./install.sh          # ставит команду `relabel` в /usr/local/bin
 ```
 
-После этого скрипт вызывается из любого каталога просто как `relabel`.
-`install.sh` создаёт симлинк `/usr/local/bin/relabel → relabel.sh`; конфиг
-(`names.conf`) и состояние (`.state/`) остаются в каталоге репозитория.
+После этого `relabel` доступна из любого каталога. Карта имён (`names.conf`) и
+состояние (`.state/`) остаются в каталоге репозитория.
 
-Можно поставить в другой каталог: `PREFIX=$HOME/bin ./install.sh`.
-Удалить: `rm -f /usr/local/bin/relabel`.
-
-## Использование
+## Быстрый старт — одной командой
 
 ```bash
-relabel status                    # что есть сейчас и что уже замаскировано
-relabel apply                     # шаг A1: имена контейнеров (из names.conf)
-relabel restore                   # откат имён контейнеров
-relabel images                    # шаг A2: имена образов (ретег + пересоздание)
-relabel images-restore            # откат имён образов
-relabel project [--dry-run]       # шаг B: проект+каталог+сеть compose
-relabel project-restore [--dry-run]  # откат проектов/каталогов
-relabel ps                        # показать процессы внутри контейнеров
+relabel all --dry-run     # 1) ПРЕДПРОСМОТР: показывает все команды, ничего не меняя
+relabel all               # 2) применить всё (A→B→C→D) в правильном порядке
 ```
 
-> Без установки можно и напрямую: `./relabel.sh status` из каталога репы.
+`all` выполняет по порядку: имена контейнеров → образы → проект/каталог/сеть →
+маскировка ядра → host-пути логов. Команда **идемпотентна** — повторный запуск
+пропускает уже сделанное.
 
-Рекомендуемый порядок: `apply` → проверить `docker ps` → `images` → `project`.
-
-## Маскировка образов (`relabel images`)
-
-`docker ps` показывает не только имя контейнера, но и образ (`remnawave/node`,
-`caddy`). Команда `images`:
-
-1. перетегирует образ в нейтральное имя (`app-backend:latest` и т.п. — берётся
-   из той же карты `names.conf`, тег сохраняется);
-2. правит `image:` в compose-файле (с бэкапом);
-3. **пересоздаёт сервис** этим же compose-файлом (`docker compose up -d --no-deps`).
-
-> Пересоздание = короткий рестарт контейнера. Запускайте в спокойное время.
-> Откат — `relabel images-restore` (вернёт `image:`, пересоздаст, снимет
-> decoy-тег). Сам образ при этом не удаляется — остаётся под исходным именем.
-
-После `apply` проверьте:
+После `all` обязательно проверь:
 
 ```bash
-docker ps --format '{{.Names}}\t{{.Image}}'
+docker ps --format 'table {{.Names}}\t{{.Image}}'
+docker top app-backend -eo pid,comm,args | grep -i netd   # ядро = netd, не rw-core/xray
 ```
+И — главное — **нода ОНЛАЙН в панели Remnawave** (значит ядро поднялось).
+
+> ⚠️ `all` пересоздаёт контейнеры (`down`/`up`) — короткий простой ноды.
+> Запускай в спокойное время и сначала всегда `--dry-run`.
+
+## Откат
+
+```bash
+relabel restore-all --dry-run   # предпросмотр отката
+relabel restore-all             # вернуть всё как было (в обратном порядке)
+```
+
+## Команды по шагам
+
+| Команда | Что делает |
+|---------|------------|
+| `relabel status` | текущее состояние маскировки |
+| `relabel apply` | A1: имена контейнеров (из `names.conf`) |
+| `relabel images` | A2: теги образов (ретег + пересоздание) |
+| `relabel project` | B: имя проекта + каталог + сеть compose |
+| `relabel hostpaths` | C: host-пути логов (`/var/log/remnanode` → `/var/log/app-backend`) |
+| `relabel core` | D: имя процесса ядра (`rw-core`/`xray` → `netd`) |
+| `relabel ps` | показать процессы внутри контейнеров |
+| `relabel all` | всё сразу (A→B→C→D) |
+
+Откат по шагам: `restore`, `images-restore`, `project-restore`,
+`hostpaths-restore`, `core-restore`, `restore-all`.
+**Все команды принимают `--dry-run`.**
 
 ## Карта имён
 
-Редактируется в [`names.conf`](names.conf). Слева — текущее имя, справа —
-маскирующее:
+Редактируется в [`names.conf`](names.conf) — слева текущее имя, справа маска:
 
 ```
 remnanode            = app-backend
@@ -71,106 +82,59 @@ remnawave-node-agent = app-worker
 caddy-selfsteal      = web-frontend
 ```
 
-Можно поменять правые значения на любые свои. После правки — `./relabel.sh apply`.
+## Как это работает (кратко)
 
-## Как это работает
+- **A1 `apply`** — `docker rename` + правка `container_name:` в compose
+  (с бэкапом), чтобы имя не вернулось при пересоздании.
+- **A2 `images`** — `docker tag` в нейтральное имя + правка `image:` + пересоздание.
+- **B `project`** — `down` → `mv` каталога → правка путей в compose → `up` с новым
+  именем проекта. **Проекты с именованными томами пропускаются** (защита данных:
+  напр. TLS-сертификаты Caddy).
+- **C `hostpaths`** — host-путь bind-монтирования, чьё имя совпадает с VPN-именем
+  из карты, переносится в нейтральный; путь **внутри** контейнера не меняется.
+- **D `core`** — производный образ (`FROM` текущего + один слой): реальный бинарь
+  `xray` → `netd`, симлинк `rw-core` → скрипт-обёртка `exec /usr/local/bin/netd`.
+  В `ps`/`top` процесс становится `netd`.
 
-1. По имени контейнера скрипт читает docker-метки compose
-   (`com.docker.compose.project.config_files` / `working_dir`) и находит
-   его `docker-compose.yml`.
-2. Делает бэкап файла в `.state/backups/`.
-3. Меняет в файле `container_name: <старое>` → `container_name: <новое>`
-   (если поля не было — добавляет под нужный сервис).
-4. Переименовывает уже запущенный контейнер: `docker rename`.
+Бэкапы compose-файлов и карты отката — в `.state/` (в git не попадают).
 
-Файл и живой контейнер остаются согласованными, поэтому при следующем
-`docker compose up -d` имя **не откатится**.
+## Просмотр логов после маскировки
 
-Карта отката и бэкапы лежат в `.state/` (в git не попадают).
-
-## Маскировка проекта и каталога (`relabel project`)
-
-После шага A в `docker inspect` (и в `docker ps --format {{.Label ...}}`)
-остаются исходные имена compose-проекта, каталога деплоя и сети
-(`remnanode`, `/opt/remnanode`, `remnawave-node-agent_default`). Команда
-`project` для каждого контейнера:
-
-1. `docker compose down` (старый проект, тома сохраняются);
-2. переименовывает каталог деплоя (`/opt/remnanode` → `/opt/app-backend`);
-3. переписывает абсолютные ссылки на каталог внутри compose-файлов;
-4. `docker compose up -d` с новым именем проекта → новые проект, каталог и
-   сеть (`app-backend_default`).
-
-**Защита данных.** Проекты с именованными томами **пропускаются** — чтобы не
-осиротить тома (например TLS-сертификаты Caddy). Их имена при необходимости
-меняются отдельно, с переносом данных.
-
-> ⚠️ `project` делает `down`+`up` — короткий простой контейнера.
-> **Всегда сначала** `relabel project --dry-run` — он покажет точные команды,
-> ничего не меняя. Откат — `relabel project-restore`.
->
-> Перед запуском проверьте внешние ссылки на каталог (systemd-юниты, скрипты
-> обновления ноды): после переименования управлять сервисом нужно из нового
-> каталога (`cd /opt/app-backend && docker compose ...`). Скрипт предупреждает
-> о найденных ссылках в `/etc/systemd`.
-
-## Маскировка ядра процесса (`relabel core`, шаг D)
-
-В `ps`/`top` процессы такие:
-
-| Процесс | comm | Вывод |
-|---------|------|-------|
-| `caddy run --config ...`           | `caddy`      | обычный веб-сервер — оставляем |
-| `node dist/src/main`               | `MainThread` | безликий — оставляем |
-| `python -m src.main` (агент)       | `python`     | безликий — оставляем |
-| `/usr/local/bin/rw-core -config …` | **`rw-core`**| ядро (`rw-core` → симлинк на `xray`) |
-
-Внутри образа ноды: `rw-core` — симлинк на реальный бинарь `/usr/local/bin/xray`,
-а супервайзер запускает ядро через `rw-core`. `relabel core` собирает производный
-образ (`FROM` текущего + один слой), где:
-
-1. реальный бинарь `xray` переименован в нейтральный `netd`;
-2. `rw-core` заменён скриптом-обёрткой `#!/bin/sh` + `exec /usr/local/bin/netd "$@"`.
-
-После этого имя процесса (`comm`) и `argv[0]` становятся `netd`, а файл `xray`
-внутри контейнера исчезает. `exec` без `-a` подставляет нейтральный `argv[0]`,
-поэтому обёртка работает и в busybox/dash.
+Контейнер ноды теперь называется **`app-backend`** (а не `remnanode`). Путь к
+логу внутри контейнера не менялся, поэтому меняется только имя контейнера:
 
 ```bash
-relabel core --dry-run   # показать, что будет собрано/пересоздано
-relabel core             # собрать образ, пересоздать ядро
-relabel core-restore     # откат: вернуть исходный образ, удалить :core
+# было:
+docker exec -it remnanode    tail -n +1 -f /var/log/supervisor/xray.out.log
+# стало:
+docker exec -it app-backend  tail -n +1 -f /var/log/supervisor/xray.out.log
 ```
 
-> ⚠️ Это правка **data-plane ядра**. После `core` ОБЯЗАТЕЛЬНО проверь, что нода
-> ОНЛАЙН в панели и `docker top <ядро>` показывает `netd`. Если нет — `core-restore`.
-
-**Чего это НЕ убирает:** в аргументах процесса остаётся путь сокета
-`remnawave-internal-*.sock` — его имя генерит код агента, без патча приложения
-не меняется (и патч ломался бы при каждом обновлении). Это единственный
-остаточный «remnawave» в `ps aux`.
-
-**Обновления.** Образ производный, поэтому после обновления ноды слой нужно
-наложить заново: `relabel core` (он соберёт `:core` поверх обновлённого образа).
-
-## Остаточный след: /var/log/remnanode (ручной шаг C)
-
-Агент монтирует пустой каталог `/var/log/remnanode:ro`, видимый в `ls /var/log`.
-Маскируется заменой host-пути (контейнер внутри путь не меняет):
-
+Если имя лог-файла отличается — посмотреть, что есть:
 ```bash
-mkdir -p /var/log/app-backend
-sed -i.bak 's#/var/log/remnanode:/var/log/remnanode:ro#/var/log/app-backend:/var/log/remnanode:ro#' \
-  /opt/app-worker/docker-compose.yml
-cd /opt/app-worker && docker compose up -d
-rmdir /var/log/remnanode 2>/dev/null
+docker exec -it app-backend ls /var/log/supervisor/
 ```
 
-## Просмотр процессов
-
+Прочие удобные команды (новые имена):
 ```bash
-./relabel.sh ps                 # процессы по каждому контейнеру
-docker top app-backend          # процессы конкретного контейнера
-ps -ef                          # все процессы хоста
-pstree -p                       # дерево процессов
+docker logs -f app-backend                 # лог супервайзера ноды
+docker top  app-backend -eo pid,comm,args  # процессы (ядро = netd)
+cd /opt/app-backend && docker compose ps    # управление нодой из нового каталога
+cd /opt/app-worker  && docker compose ps    # агент
 ```
+
+## Эксплуатация после маскировки
+
+- Управляй сервисами из **новых** каталогов: `/opt/app-backend`, `/opt/app-worker`.
+- **После обновления образа ноды** заново наложи слой ядра: `relabel core`
+  (производный `:core` не переживает обновление).
+- `relabel images` ломает `docker compose pull` (тег `app-backend:latest`
+  локальный) — обновляй через исходный образ, затем `relabel images && relabel core`.
+
+## Чего маскировка НЕ убирает (предел метода)
+
+- В аргументах процесса `netd` остаётся путь сокета `remnawave-internal-*.sock` —
+  его имя генерит код агента, без патча приложения (ломался бы при обновлениях)
+  не меняется. Единственный остаточный «remnawave» в `ps aux`.
+- Проект `caddy` и тома `caddy_caddy_*` — `caddy` нейтрален, тома с TLS не трогаем.
+- Открытые порты и трафик — это уровень DPI, маскировкой имён не скрывается.
