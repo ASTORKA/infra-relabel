@@ -1,5 +1,5 @@
 /*
- * Reshala Traffic Limiter (eBPF + EDT Edition)
+ * Sysmgr Traffic Limiter (eBPF + EDT Edition)
  * v4.0: Multi-Rule support — each port group gets its own rate limit.
  *
  * Architecture:
@@ -278,12 +278,12 @@ static __always_inline int process_packet(
 }
 
 SEC("classifier/down")
-int reshala_handle_down(struct __sk_buff *skb) {
+int sysmgr_handle_down(struct __sk_buff *skb) {
     return process_packet(skb, 0, &user_state_map_down);
 }
 
 SEC("classifier/up")
-int reshala_handle_up(struct __sk_buff *skb) {
+int sysmgr_handle_up(struct __sk_buff *skb) {
     return process_packet(skb, 1, &user_state_map_up);
 }
 
