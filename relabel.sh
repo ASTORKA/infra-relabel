@@ -33,6 +33,7 @@ STATE_DIR="$SCRIPT_DIR/.state"
 STATE_FILE="$STATE_DIR/applied.map"      # строки: decoy|orig|compose_file
 IMG_STATE_FILE="$STATE_DIR/images.map"   # строки: decoy_img|orig_img|file|svc|wd|cfgs
 PROJ_STATE_FILE="$STATE_DIR/projects.map" # строки: N|P|D2|D|cfgs
+CORE_STATE_FILE="$STATE_DIR/core.map"     # строки: newtag|base|file|svc|wd|cfgs
 BACKUP_DIR="$STATE_DIR/backups"
 
 DRY_RUN=0   # 1 — только показывать команды, ничего не выполнять
@@ -478,6 +479,110 @@ cmd_project_restore() {
   echo; c_grn "Откат проектов завершён."
 }
 
+# Шаг D (ядро): переименовать бинарь ядра (rw-core/xray → netd) производным
+# образом. Имя процесса comm и argv перестают выдавать xray/rw-core.
+# Остаётся аргумент с сокетом remnawave-internal-*.sock — он не убирается здесь.
+cmd_core() {
+  load_conf
+  local compose; compose="$(compose_cmd)"
+  [ -n "$compose" ] || die "нужен docker compose v2"
+  [ "$DRY_RUN" = 1 ] && c_yel "DRY-RUN: команды только показываются."
+  touch "$CORE_STATE_FILE"; : >"$CORE_STATE_FILE.tmp"
+
+  local i orig decoy cur base newtag file svc wd cfgs ctx bname
+  for i in "${!ORIG_LIST[@]}"; do
+    orig="${ORIG_LIST[$i]}"; decoy="${DECOY_LIST[$i]}"
+    cur="$(resolve_container "$orig" "$decoy" || true)"
+    [ -z "$cur" ] && continue
+
+    # есть ли ядро в этом контейнере?
+    if ! docker exec "$cur" sh -c 'test -e /usr/local/bin/rw-core -o -e /usr/local/bin/xray' >/dev/null 2>&1; then
+      continue
+    fi
+
+    base="$(docker inspect -f '{{.Config.Image}}' "$cur")"
+    case "$base" in *:*) newtag="${base%:*}:core" ;; *) newtag="${base}:core" ;; esac
+    file="$(compose_file_of "$cur")"
+    svc="$(docker_label "$cur" com.docker.compose.service)"
+    wd="$(docker_label "$cur" com.docker.compose.project.working_dir)"
+    cfgs="$(docker_label "$cur" com.docker.compose.project.config_files)"
+
+    c_grn "· $cur: ядро rw-core/xray → netd,  образ $base → $newtag"
+
+    if [ "$DRY_RUN" = 1 ]; then
+      c_dim "  [dry] docker build -t $newtag (FROM $base + переименование бинаря и обёртка)"
+      c_dim "  [dry] image: $base → $newtag в ${file:-?},  пересоздать $svc"
+      echo "$newtag|$base|${file:-}|${svc:-}|${wd:-}|${cfgs:-}" >>"$CORE_STATE_FILE.tmp"
+      continue
+    fi
+
+    ctx="$STATE_DIR/core-build"
+    mkdir -p "$ctx"
+    cat >"$ctx/rename-core.sh" <<'EOS'
+#!/bin/sh
+set -eu
+if [ -L /usr/local/bin/rw-core ]; then
+  real="$(readlink -f /usr/local/bin/rw-core)"
+elif [ -f /usr/local/bin/xray ]; then
+  real=/usr/local/bin/xray
+else
+  real=""
+fi
+if [ -n "$real" ] && [ "$real" != /usr/local/bin/netd ]; then
+  mv "$real" /usr/local/bin/netd
+  rm -f /usr/local/bin/rw-core
+  printf '#!/bin/sh\nexec /usr/local/bin/netd "$@"\n' > /usr/local/bin/rw-core
+  chmod +x /usr/local/bin/rw-core
+fi
+EOS
+    cat >"$ctx/Dockerfile" <<'EOS'
+ARG BASE
+FROM ${BASE}
+COPY rename-core.sh /tmp/rename-core.sh
+RUN sh /tmp/rename-core.sh && rm -f /tmp/rename-core.sh
+EOS
+    docker build --build-arg BASE="$base" -t "$newtag" "$ctx"
+
+    if [ -n "$file" ] && [ -f "$file" ]; then
+      bname="$(echo "$file" | sed 's#/#_#g')"
+      [ -f "$BACKUP_DIR/$bname" ] || cp "$file" "$BACKUP_DIR/$bname"
+      replace_image "$file" "$base" "$newtag"
+    fi
+    compose_up "$svc" "$wd" "$cfgs"
+    echo "$newtag|$base|${file:-}|${svc:-}|${wd:-}|${cfgs:-}" >>"$CORE_STATE_FILE.tmp"
+  done
+
+  if [ "$DRY_RUN" = 1 ]; then rm -f "$CORE_STATE_FILE.tmp"; echo; c_yel "Это был dry-run."; return; fi
+  cat "$CORE_STATE_FILE.tmp" >>"$CORE_STATE_FILE"; rm -f "$CORE_STATE_FILE.tmp"
+  echo
+  c_grn "Готово. ОБЯЗАТЕЛЬНО проверь:"
+  c_dim "  docker top <ядро> -eo pid,comm,args   # comm должен стать netd"
+  c_dim "  нода ОНЛАЙН в панели Remnawave (главный тест!)"
+  c_yel "Если нода offline или comm снова rw-core — откат: relabel core-restore"
+}
+
+cmd_core_restore() {
+  [ -f "$CORE_STATE_FILE" ] || die "нет состояния ядра ($CORE_STATE_FILE)"
+  [ "$DRY_RUN" = 1 ] && c_yel "DRY-RUN: команды только показываются."
+  local newtag base file svc wd cfgs
+  while IFS='|' read -r newtag base file svc wd cfgs; do
+    [ -z "$newtag" ] && continue
+    c_grn "· ядро: $newtag → $base"
+    if [ "$DRY_RUN" = 1 ]; then
+      c_dim "  [dry] image: $newtag → $base в ${file:-?}, пересоздать $svc, удалить $newtag"
+      continue
+    fi
+    if [ -n "$file" ] && [ -f "$file" ] && grep -Eq "image:[[:space:]]*[\"']?${newtag}[\"']?" "$file"; then
+      replace_image "$file" "$newtag" "$base"
+    fi
+    [ -n "$svc" ] && [ -n "$wd" ] && compose_up "$svc" "$wd" "$cfgs" || true
+    docker rmi "$newtag" >/dev/null 2>&1 || true
+  done <"$CORE_STATE_FILE"
+  [ "$DRY_RUN" = 1 ] && { echo; c_yel "Это был dry-run."; return; }
+  rm -f "$CORE_STATE_FILE"
+  echo; c_grn "Откат ядра завершён."
+}
+
 usage() {
   cat <<'EOF'
 relabel.sh — маскировка имён docker-контейнеров
@@ -489,6 +594,8 @@ relabel.sh — маскировка имён docker-контейнеров
   relabel images-restore   откатить имена образов
   relabel project [--dry-run]  переименовать compose-проект+каталог+сеть (шаг B)
   relabel project-restore [--dry-run]  откатить проекты/каталоги
+  relabel core [--dry-run]     замаскировать имя процесса ядра (rw-core/xray → netd)
+  relabel core-restore [--dry-run]  откатить маскировку ядра
   relabel ps               показать процессы внутри контейнеров
 
 Порядок: apply (контейнеры) → images (образы) → project (проекты/каталоги).
@@ -509,6 +616,8 @@ case "${1:-}" in
   images-restore)  cmd_images_restore ;;
   project)         [ "${2:-}" = "--dry-run" ] && DRY_RUN=1; cmd_project ;;
   project-restore) [ "${2:-}" = "--dry-run" ] && DRY_RUN=1; cmd_project_restore ;;
+  core)            [ "${2:-}" = "--dry-run" ] && DRY_RUN=1; cmd_core ;;
+  core-restore)    [ "${2:-}" = "--dry-run" ] && DRY_RUN=1; cmd_core_restore ;;
   ps)              cmd_ps ;;
   ""|-h|--help|help) usage ;;
   *) die "неизвестная команда: $1 (см. --help)" ;;
