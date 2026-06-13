@@ -26,7 +26,46 @@ cd /opt/infra-relabel
 После этого `relabel` доступна из любого каталога. Карта имён (`names.conf`) и
 состояние (`.state/`) остаются в каталоге репозитория.
 
-## Быстрый старт — одной командой
+## Всё с нуля одной командой (clone + маскировка + ускорение + защита)
+
+Скопировать репо, поставить команду и применить **всё** (переименования +
+optimize + protect) одним вызовом. **От root.** Перед боевым запуском
+подставь СВОИ значения портов и IP панели:
+
+```bash
+git clone https://github.com/ASTORKA/infra-relabel /opt/infra-relabel \
+  && cd /opt/infra-relabel && ./install.sh \
+  && SSH_PORT=22 TCP_PORTS=443 UDP_PORTS=443 WHITELIST="IP_ПАНЕЛИ" NONINTERACTIVE=1 \
+     ./relabel.sh all-with-accelerator
+```
+
+Что делает: маскировку `all` (A→B→C→D) → `optimize` (XanMod+BBRv3, sysctl) →
+`protect` (nftables-firewall) → `diagnose`.
+
+> ⚠️ **Критично — порты firewall.** `TCP_PORTS`/`UDP_PORTS` должны включать
+> ВСЕ порты, на которых нода принимает трафик (Reality/VLESS, Hysteria2/TUIC),
+> иначе `protect` их **заблокирует и нода уйдёт в офлайн**. Посмотри реальные:
+> `ss -tulnp`. `WHITELIST` — IP панели/мониторинга (никогда не банятся).
+> `SSH_PORT` — твой SSH, иначе рискуешь потерять доступ (есть сейфти-таймер
+> `sys-fw-safety`, который откатит firewall через 5 мин без подтверждения).
+
+**Сначала прогон вхолостую** (ничего не меняет, покажет все команды):
+
+```bash
+git clone https://github.com/ASTORKA/infra-relabel /opt/infra-relabel \
+  && cd /opt/infra-relabel && ./relabel.sh all-with-accelerator --dry-run
+```
+
+**Безопасный вариант — без `NONINTERACTIVE`:** тогда `protect` сам спросит порты
+интерактивно (труднее ошибиться):
+
+```bash
+cd /opt/infra-relabel && ./install.sh && relabel all-with-accelerator
+```
+
+> `optimize` ставит XanMod-ядро — после него нужен `reboot` (BBRv3 заработает).
+
+## Быстрый старт — только маскировка
 
 ```bash
 relabel all --dry-run     # 1) ПРЕДПРОСМОТР: показывает все команды, ничего не меняя
@@ -66,7 +105,8 @@ relabel restore-all             # вернуть всё как было (в об
 | `relabel hostpaths` | C: host-пути логов (`/var/log/remnanode` → `/var/log/app-backend`) |
 | `relabel core` | D: имя процесса ядра (`rw-core`/`xray` → `netd`) |
 | `relabel ps` | показать процессы внутри контейнеров |
-| `relabel all` | всё сразу (A→B→C→D) |
+| `relabel all` | вся маскировка сразу (A→B→C→D) |
+| `relabel all-with-accelerator` | маскировка + `optimize` + `protect` + `diagnose` (root) |
 
 Откат по шагам: `restore`, `images-restore`, `project-restore`,
 `hostpaths-restore`, `core-restore`, `restore-all`.

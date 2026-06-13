@@ -720,6 +720,32 @@ cmd_all() {
   fi
 }
 
+# Маскировка + ускорение/защита ноды (accelerator) одной командой. Нужен root.
+# Порты firewall: protect спросит интерактивно, либо задайте через ENV
+# (TCP_PORTS/UDP_PORTS/SSH_PORT/WHITELIST + NONINTERACTIVE=1) ДО запуска.
+cmd_all_with_accel() {
+  if [ "${EUID:-$(id -u)}" -ne 0 ]; then
+    c_yel "ВНИМАНИЕ: optimize/protect требуют root — запусти через sudo, иначе они пропустятся."
+  fi
+  cmd_all
+  local acc="$SCRIPT_DIR/accelerator/install.sh"
+  if [ ! -f "$acc" ]; then
+    c_yel "accelerator не найден ($acc) — ускорение/защита пропущены"
+    return
+  fi
+  echo; c_grn "════ ускорение ноды (accelerator → optimize) ════"
+  run bash "$acc" optimize
+  echo; c_grn "════ защита ноды (accelerator → protect) ════"
+  run bash "$acc" protect
+  echo; c_grn "════ диагностика (read-only) ════"
+  run bash "$acc" diagnose
+  echo
+  if [ "$DRY_RUN" = 1 ]; then c_yel "DRY-RUN завершён — на сервере ничего не изменилось."; else
+    c_grn "Готово: маскировка + ускорение + защита применены."
+    c_yel "Если optimize ставил XanMod — нужен reboot (uname -r должен содержать xanmod)."
+  fi
+}
+
 # Полный откат в обратном порядке (пути синхронизируются по шагам).
 cmd_all_restore() {
   c_grn "════ откат ядра ════";    [ -f "$CORE_STATE_FILE" ] && cmd_core_restore || c_dim "· ядро не маскировалось"
@@ -736,8 +762,9 @@ usage() {
 relabel.sh — маскировка имён docker-контейнеров VPN-ноды
 
 ОДНОЙ КОМАНДОЙ:
-  relabel all [--dry-run]      применить ВСЁ (A→B→C→D) в правильном порядке
-  relabel restore-all [--dry-run]  откатить ВСЁ
+  relabel all [--dry-run]      применить ВСЁ маскирование (A→B→C→D)
+  relabel all-with-accelerator [--dry-run]  маскирование + optimize + protect (root!)
+  relabel restore-all [--dry-run]  откатить ВСЁ маскирование
 
 ПО ШАГАМ:
   relabel status               показать текущее состояние маскировки
@@ -765,6 +792,7 @@ need_docker
 case "${1:-}" in
   status)            cmd_status ;;
   all)               cmd_all ;;
+  all-with-accelerator) cmd_all_with_accel ;;
   restore-all)       cmd_all_restore ;;
   apply)             cmd_apply ;;
   restore)           cmd_restore ;;
