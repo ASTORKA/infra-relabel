@@ -756,6 +756,33 @@ cmd_sysmgr() {
   bash "$sm" install
 }
 
+# Фильтр VPN-портов mobile443 в режиме block-only (БЕЗ Telegram): дропает IP
+# из blocklist'ов (гос-сети + антисканеры). Не запирает на мобильные ASN.
+# Вендорен (asn.sh локальный); листы тянутся из traffic-guard-lists (данные).
+# install — интерактивный (спросит листы и порты), update — рефреш по конфигу.
+cmd_mobile443() {
+  local m="$SCRIPT_DIR/mobile443/asn.sh"
+  if [ ! -f "$m" ]; then c_yel "· mobile443 не найден ($m) — пропуск"; return 0; fi
+  if [ "$DRY_RUN" = 1 ]; then
+    if [ -f /opt/mobile443/config.conf ]; then
+      c_grn "· mobile443 уже стоит → обновить листы"
+      c_dim "  [dry] bash $m update block-only"
+    else
+      c_grn "· установить mobile443 block-only (дроп gov/antiscanner на портах)"
+      c_dim "  [dry] PORTS='${PORTS:-443}' bash $m install block-only"
+    fi
+    return 0
+  fi
+  if [ "${EUID:-$(id -u)}" -ne 0 ]; then c_yel "· mobile443 требует root — пропуск"; return 0; fi
+  if [ -f /opt/mobile443/config.conf ]; then
+    c_grn "· mobile443 уже установлен — обновляю blocklist'ы…"
+    bash "$m" update block-only
+  else
+    c_grn "· установка mobile443 block-only (ответь: какие листы и порты)…"
+    bash "$m" install block-only
+  fi
+}
+
 # Маскировка + ускорение/защита ноды (accelerator) одной командой. Нужен root.
 # Порты firewall: protect спросит интерактивно, либо задайте через ENV
 # (TCP_PORTS/UDP_PORTS/SSH_PORT/WHITELIST + NONINTERACTIVE=1) ДО запуска.
@@ -774,12 +801,13 @@ cmd_all_with_accel() {
   run bash "$acc" optimize
   echo; c_grn "════ защита ноды (accelerator → protect) ════"
   run bash "$acc" protect
+  echo; c_grn "════ фильтр портов (mobile443 block-only) ════"; cmd_mobile443
   echo; c_grn "════ диагностика (read-only) ════"
   run bash "$acc" diagnose
   echo; c_grn "════ управляющий фреймворк (sysmgr) ════"; cmd_sysmgr
   echo
   if [ "$DRY_RUN" = 1 ]; then c_yel "DRY-RUN завершён — на сервере ничего не изменилось."; else
-    c_grn "Готово: selfsteal + маскировка + ускорение + защита + sysmgr."
+    c_grn "Готово: selfsteal + маскировка + ускорение + защита + mobile443 + sysmgr."
     c_yel "Если optimize ставил XanMod — нужен reboot (uname -r должен содержать xanmod)."
     c_dim "Управление: команда 'sysmgr' (TUI)."
   fi
@@ -802,7 +830,7 @@ relabel.sh — маскировка имён docker-контейнеров VPN-�
 
 ОДНОЙ КОМАНДОЙ:
   relabel all [--dry-run]      применить ВСЁ маскирование (A→B→C→D)
-  relabel all-with-accelerator [--dry-run]  selfsteal + маскирование + optimize + protect + sysmgr (root!)
+  relabel all-with-accelerator [--dry-run]  selfsteal+маскирование+optimize+protect+mobile443+sysmgr (root!)
   relabel restore-all [--dry-run]  откатить ВСЁ маскирование
 
 ПО ШАГАМ:
@@ -814,6 +842,7 @@ relabel.sh — маскировка имён docker-контейнеров VPN-�
   relabel core   [--dry-run]   D:  имя процесса ядра (rw-core/xray → netd)
   relabel selfsteal [--dry-run] установить selfsteal-сайт (если ещё не стоит)
   relabel sysmgr [--dry-run]   установить управляющий фреймворк sysmgr (root)
+  relabel mobile443 [--dry-run] фильтр портов: дроп blocklist'ов, block-only (root)
   relabel ps                   показать процессы внутри контейнеров
 
 ОТКАТ ПО ШАГАМ:  restore / images-restore / project-restore /
@@ -847,6 +876,7 @@ case "${1:-}" in
   core-restore)      cmd_core_restore ;;
   selfsteal)         cmd_selfsteal ;;
   sysmgr)            cmd_sysmgr ;;
+  mobile443)         cmd_mobile443 ;;
   ps)                cmd_ps ;;
   ""|-h|--help|help) usage ;;
   *) die "неизвестная команда: $1 (см. --help)" ;;

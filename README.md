@@ -1,5 +1,28 @@
 # infra-relabel
 
+> ## Что в репозитории и что ставит (тезисно)
+>
+> Один репозиторий + команда `relabel` для подготовки VPN-ноды Remnawave.
+> **Всё вендорено внутрь** (внешних tool-зависимостей нет — чужие репо могут
+> закрыть, у нас останется рабочая копия), всё ставится одной командой
+> `relabel all-with-accelerator`:
+>
+> - **Маскировка ноды** (`relabel all`) — переименование контейнеров, образов,
+>   compose-проектов/каталогов/сетей, host-путей логов и процесса ядра
+>   (`rw-core`/`xray` → `netd`) под нейтральные имена. Обратимо.
+> - **selfsteal** — маскирующий сайт-заглушка (Caddy). Из форка ASTORKA.
+> - **`accelerator/`** — оптимизация ядра/сети (XanMod+BBRv3, sysctl, RPS) +
+>   nftables-firewall (antiscan/anti-flood/CrowdSec) + диагностика.
+>   Де-брендирован под `sys-*` / `sysguard`.
+> - **`mobile443/`** — фильтр VPN-портов в **block-only** режиме (без Telegram):
+>   дропает IP из blocklist'ов (гос-сети, антисканеры). Легитимных юзеров не режет.
+> - **`sysmgr/`** — TUI-фреймворк управления нодой/флотом (дашборд, шейпер
+>   трафика, security, gateway). Вендорен, де-брендирован, самообновление выкл.
+>
+> Подробности по каждому — ниже.
+
+---
+
 Маскирует VPN-ноду **Remnawave** на сервере под обычный веб-стек, чтобы хостинг
 по `docker ps` / `ps` / `ls /opt` / меткам compose не опознавал VPN-сервис.
 
@@ -41,7 +64,8 @@ git clone https://github.com/ASTORKA/infra-relabel /opt/infra-relabel \
 
 Что делает по порядку: **selfsteal** (маскирующий сайт — если ещё не стоит) →
 маскировка `all` (A→B→C→D) → `optimize` (XanMod+BBRv3, sysctl) →
-`protect` (nftables-firewall) → `diagnose` → **sysmgr** (управляющий фреймворк).
+`protect` (nftables-firewall) → **mobile443** (block-only фильтр портов) →
+`diagnose` → **sysmgr** (управляющий фреймворк).
 
 > selfsteal ставится первым (его контейнер `caddy-selfsteal` тут же
 > переименуется в `web-frontend` шагом маскировки) и **спросит домен**
@@ -112,6 +136,7 @@ relabel restore-all             # вернуть всё как было (в об
 | `relabel core` | D: имя процесса ядра (`rw-core`/`xray` → `netd`) |
 | `relabel selfsteal` | установить selfsteal-сайт из форка ASTORKA (если не стоит) |
 | `relabel sysmgr` | установить управляющий фреймворк sysmgr (TUI, root) |
+| `relabel mobile443` | block-only фильтр портов (дроп blocklist'ов, root) |
 | `relabel ps` | показать процессы внутри контейнеров |
 | `relabel all` | вся маскировка сразу (A→B→C→D) |
 | `relabel all-with-accelerator` | маскировка + `optimize` + `protect` + `diagnose` (root) |
@@ -247,3 +272,29 @@ sudo sysmgr           # запустить TUI-управление
 > `modules/bot_bedolaga/` внутри `/opt/sysmgr` (функциональные, видны только при
 > глубоком `ls`) и TUI-баннер (виден лишь оператору, не хостингу). Подробности —
 > в [sysmgr/README.md](sysmgr/README.md).
+
+## Фильтр портов (`mobile443/`, block-only)
+
+В каталоге [`mobile443/`](mobile443/) — **вендоренный** фильтр VPN-портов
+(`asn.sh`). Ставим его в режиме **block-only** (**без Telegram** и без
+Remnawave-интеграции): на указанных портах **дропаются IP из blocklist'ов**
+traffic-guard (гос-сети + антисканеры). Mobile-allowlist в этом режиме
+**выключен**, поэтому обычные пользователи НЕ блокируются — режется только
+известный «плохой» трафик (сканеры/гос-сети).
+
+```bash
+relabel mobile443                       # установить (root): спросит листы и порты
+PORTS="443 8443" relabel mobile443      # подсказать порты (по умолчанию 443)
+```
+
+`install` интерактивный (спросит, какие листы включить и порты — можно нажать
+Enter, тогда возьмутся `PORTS`/443). Если уже установлен — `relabel mobile443`
+делает **update** (рефреш blocklist'ов, неинтерактивно). Артефакты:
+`/opt/mobile443`, systemd `mobile443-update.timer` (ежедневный рефреш листов),
+ipset `traf_guard_*`, iptables-цепочки.
+
+> Блоклист-данные тянутся из стороннего репо `traffic-guard-lists` (это
+> **динамические данные**, а не код — их вендорить нет смысла, они обновляются).
+> Сам инструмент (`asn.sh`) вендорен — от репо автора не зависим.
+> Имена `mobile443`/`*_443` функциональные (де-бренд не запрашивался) — при
+> желании переименуем отдельно.
