@@ -3,13 +3,12 @@
 Оптимизация, диагностика и защита VPN-ноды (panel / VLESS-Reality, xHTTP, Hysteria2/TUIC).
 Три модуля, все идемпотентны, всё откатывается одной командой.
 
-> **Происхождение.** Вендоренный и де-брендированный форк
-> [jestivald/node-accelerator](https://github.com/jestivald/node-accelerator)
-> (лицензия сохранена в [LICENSE](LICENSE)). Все host-видимые артефакты
-> переименованы под нейтральную схему STEALTHNET, согласованную с `relabel`:
-> systemd-юниты `sys-*`, nftables-таблица `sysguard`, пути `/etc/sysguard`,
-> env `PANEL_URL/PANEL_TOKEN`. Подробности — в корневом README раздел
-> «Ускорение/защита ноды».
+> **Происхождение.** Код **полностью вендорен** в этот репозиторий — внешних
+> зависимостей при запуске нет (форк стороннего инструмента под MIT, копирайт
+> сохранён в [LICENSE](LICENSE)). Все host-видимые артефакты переименованы под
+> нейтральную схему STEALTHNET, согласованную с `relabel`: systemd-юниты `sys-*`,
+> nftables-таблица `sysguard`, пути `/etc/sysguard`, env `PANEL_URL/PANEL_TOKEN`.
+> Подробности — в корневом README раздел «Ускорение/защита ноды».
 
 > **Поддержка:** Debian 11/12/13, Ubuntu 20.04–24.04. Тестируется на нодах с `network_mode: host`.
 

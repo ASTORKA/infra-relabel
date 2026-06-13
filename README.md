@@ -188,10 +188,12 @@ cd /opt/app-worker  && docker compose ps    # агент
 
 ## Ускорение/защита ноды (`accelerator/`)
 
-В каталоге [`accelerator/`](accelerator/) — вендоренный и **де-брендированный**
-форк [jestivald/node-accelerator](https://github.com/jestivald/node-accelerator):
-оптимизация ядра/сети (XanMod+BBRv3, sysctl, RPS/RFS), nftables-фаервол
-(antiscan, anti-flood, CrowdSec) и read-only диагностика ноды.
+В каталоге [`accelerator/`](accelerator/) — **полностью вендоренный** и
+**де-брендированный** форк стороннего MIT-инструмента (копирайт — в
+[`accelerator/LICENSE`](accelerator/LICENSE)): оптимизация ядра/сети
+(XanMod+BBRv3, sysctl, RPS/RFS), nftables-фаервол (antiscan, anti-flood,
+CrowdSec) и read-only диагностика ноды. Внешних зависимостей при запуске нет —
+код целиком лежит у нас, апстрим-репозиторий для работы не нужен.
 
 Он работает на уровне хоста (не трогает имена контейнеров), но создавал свои
 host-видимые артефакты с брендингом — они переименованы под нашу нейтральную
