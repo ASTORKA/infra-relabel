@@ -824,6 +824,52 @@ cmd_all_restore() {
   [ "$DRY_RUN" = 1 ] && c_yel "DRY-RUN завершён." || c_grn "Полный откат завершён."
 }
 
+# Полное удаление: откат ВСЕХ действий (сервисы + маскировка) и снятие команды.
+# Порядок обратный установке. selfsteal-сайт и каталог репо НЕ трогаем (см. вывод).
+cmd_uninstall() {
+  [ "$DRY_RUN" = 1 ] && c_yel "DRY-RUN: показываю шаги удаления, ничего не меняю."
+  if [ "${EUID:-$(id -u)}" -ne 0 ]; then
+    c_yel "ВНИМАНИЕ: удаление сервисов (firewall/тюнинг/mobile443/sysmgr) требует root — без него они пропустятся."
+  fi
+
+  echo; c_grn "════ удаление mobile443 (фильтр портов) ════"
+  if [ -d /opt/mobile443 ] && [ -f "$SCRIPT_DIR/mobile443/asn.sh" ]; then
+    run bash "$SCRIPT_DIR/mobile443/asn.sh" remove block-only
+  else c_dim "· mobile443 не установлен — пропуск"; fi
+
+  echo; c_grn "════ откат accelerator (firewall + тюнинг) ════"
+  if [ -f "$SCRIPT_DIR/accelerator/install.sh" ]; then
+    run bash "$SCRIPT_DIR/accelerator/install.sh" rollback all
+  else c_dim "· accelerator нет — пропуск"; fi
+
+  echo; c_grn "════ удаление sysmgr (управляющий фреймворк) ════"
+  if [ -d /opt/sysmgr ]; then
+    run rm -rf /opt/sysmgr
+    run rm -f /usr/local/bin/sysmgr /var/log/sysmgr.log
+    if [ "$DRY_RUN" = 1 ]; then
+      c_dim "  [dry] снять alias sysmgr из ~/.bashrc, удалить ~/.sysmgr_fleet"
+    else
+      sed -i '/alias sysmgr=/d' /root/.bashrc 2>/dev/null || true
+      rm -f "$HOME/.sysmgr_fleet" /root/.sysmgr_fleet 2>/dev/null || true
+    fi
+    c_grn "· sysmgr удалён (/opt/sysmgr, команда, лог, база флота)"
+    c_dim "  (модули, включённые вручную из TUI — geoblock/shaper — снимай заранее в самом sysmgr)"
+  else c_dim "· sysmgr не установлен — пропуск"; fi
+
+  echo; c_grn "════ размаскировка ноды (restore-all) ════"
+  cmd_all_restore
+
+  echo; c_grn "════ снятие команды relabel ════"
+  run rm -f /usr/local/bin/relabel
+
+  echo
+  if [ "$DRY_RUN" = 1 ]; then c_yel "Это был dry-run — ничего не удалено."; return; fi
+  c_grn "Удаление завершено."
+  c_yel "Осталось вручную (по желанию):"
+  c_dim "  • selfsteal-сайт (контейнер caddy-selfsteal) — снять его инсталлятором, не трогали"
+  c_dim "  • каталог репозитория:  rm -rf $SCRIPT_DIR"
+}
+
 usage() {
   cat <<'EOF'
 relabel.sh — маскировка имён docker-контейнеров VPN-ноды
@@ -832,6 +878,7 @@ relabel.sh — маскировка имён docker-контейнеров VPN-�
   relabel all [--dry-run]      применить ВСЁ маскирование (A→B→C→D)
   relabel all-with-accelerator [--dry-run]  selfsteal+маскирование+optimize+protect+mobile443+sysmgr (root!)
   relabel restore-all [--dry-run]  откатить ВСЁ маскирование
+  relabel uninstall [--dry-run]    ПОЛНОЕ удаление: откат всего + снять сервисы и команду
 
 ПО ШАГАМ:
   relabel status               показать текущее состояние маскировки
@@ -864,6 +911,7 @@ case "${1:-}" in
   all)               cmd_all ;;
   all-with-accelerator) cmd_all_with_accel ;;
   restore-all)       cmd_all_restore ;;
+  uninstall|purge)   cmd_uninstall ;;
   apply)             cmd_apply ;;
   restore)           cmd_restore ;;
   images)            cmd_images ;;

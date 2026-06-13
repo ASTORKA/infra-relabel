@@ -117,12 +117,28 @@ docker top app-backend -eo pid,comm,args | grep -i netd   # ядро = netd, н�
 > ⚠️ `all` пересоздаёт контейнеры (`down`/`up`) — короткий простой ноды.
 > Запускай в спокойное время и сначала всегда `--dry-run`.
 
-## Откат
+## Откат и удаление
 
 ```bash
-relabel restore-all --dry-run   # предпросмотр отката
-relabel restore-all             # вернуть всё как было (в обратном порядке)
+relabel restore-all --dry-run   # предпросмотр отката МАСКИРОВКИ
+relabel restore-all             # вернуть имена/образы/проекты/ядро как было
+
+relabel uninstall --dry-run     # предпросмотр ПОЛНОГО удаления
+relabel uninstall               # снести всё, что ставил репозиторий, + откат маскировки
 ```
+
+`uninstall` (полное удаление, в обратном порядке установки):
+
+1. `mobile443` — `asn.sh remove` (снимает фильтр, ipset, systemd-таймер);
+2. `accelerator` — `rollback all` (убирает nftables-firewall и тюнинг);
+3. `sysmgr` — удаляет `/opt/sysmgr`, команду, лог, базу флота, alias;
+4. **размаскировка** — `restore-all` (контейнеры/образы/проекты/ядро как было);
+5. снимает команду `relabel` (`/usr/local/bin/relabel`).
+
+> Что `uninstall` НЕ трогает (по соображениям безопасности): **selfsteal-сайт**
+> (рабочая заглушка — снимай отдельно его инсталлятором) и **каталог репо**
+> (`rm -rf /opt/infra-relabel` вручную). Модули sysmgr, включённые вручную из
+> TUI (geoblock/shaper), снимай заранее в самом `sysmgr`. Требует root.
 
 ## Команды по шагам
 
@@ -139,7 +155,8 @@ relabel restore-all             # вернуть всё как было (в об
 | `relabel mobile443` | block-only фильтр портов (дроп blocklist'ов, root) |
 | `relabel ps` | показать процессы внутри контейнеров |
 | `relabel all` | вся маскировка сразу (A→B→C→D) |
-| `relabel all-with-accelerator` | маскировка + `optimize` + `protect` + `diagnose` (root) |
+| `relabel all-with-accelerator` | маскировка + `optimize` + `protect` + `mobile443` + `sysmgr` (root) |
+| `relabel uninstall` | ПОЛНОЕ удаление: снять все сервисы + откат маскировки + команду (root) |
 
 Откат по шагам: `restore`, `images-restore`, `project-restore`,
 `hostpaths-restore`, `core-restore`, `restore-all`.
