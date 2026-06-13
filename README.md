@@ -39,8 +39,14 @@ git clone https://github.com/ASTORKA/infra-relabel /opt/infra-relabel \
      ./relabel.sh all-with-accelerator
 ```
 
-Что делает: маскировку `all` (A→B→C→D) → `optimize` (XanMod+BBRv3, sysctl) →
+Что делает по порядку: **selfsteal** (маскирующий сайт — если ещё не стоит) →
+маскировка `all` (A→B→C→D) → `optimize` (XanMod+BBRv3, sysctl) →
 `protect` (nftables-firewall) → `diagnose`.
+
+> selfsteal ставится первым (его контейнер `caddy-selfsteal` тут же
+> переименуется в `web-frontend` шагом маскировки) и **спросит домен**
+> интерактивно — `NONINTERACTIVE=1` на него не влияет (это для protect/optimize).
+> Если selfsteal уже установлен — шаг пропускается.
 
 > ⚠️ **Критично — порты firewall.** `TCP_PORTS`/`UDP_PORTS` должны включать
 > ВСЕ порты, на которых нода принимает трафик (Reality/VLESS, Hysteria2/TUIC),
@@ -104,6 +110,7 @@ relabel restore-all             # вернуть всё как было (в об
 | `relabel project` | B: имя проекта + каталог + сеть compose |
 | `relabel hostpaths` | C: host-пути логов (`/var/log/remnanode` → `/var/log/app-backend`) |
 | `relabel core` | D: имя процесса ядра (`rw-core`/`xray` → `netd`) |
+| `relabel selfsteal` | установить selfsteal-сайт из форка ASTORKA (если не стоит) |
 | `relabel ps` | показать процессы внутри контейнеров |
 | `relabel all` | вся маскировка сразу (A→B→C→D) |
 | `relabel all-with-accelerator` | маскировка + `optimize` + `protect` + `diagnose` (root) |

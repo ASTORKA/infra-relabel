@@ -720,13 +720,35 @@ cmd_all() {
   fi
 }
 
+# Установка selfsteal-сайта (маскирующий лендинг Caddy) из форка ASTORKA.
+# Идемпотентно: если контейнер уже есть (caddy-selfsteal или web-frontend) — пропуск.
+# Интерактивно (installer спросит домен и т.п.) — нужен TTY.
+SELFSTEAL_URL="https://github.com/ASTORKA/remnawave-scripts/raw/main/selfsteal.sh"
+cmd_selfsteal() {
+  load_conf
+  if docker container inspect web-frontend >/dev/null 2>&1 \
+     || docker container inspect caddy-selfsteal >/dev/null 2>&1; then
+    c_dim "· selfsteal уже установлен (контейнер есть) — пропуск"
+    return 0
+  fi
+  if [ "$DRY_RUN" = 1 ]; then
+    c_grn "· установить selfsteal (интерактивно — спросит домен)"
+    c_dim "  [dry] bash <(curl -Ls $SELFSTEAL_URL) @ install"
+    return 0
+  fi
+  command -v curl >/dev/null 2>&1 || { c_yel "· нет curl — пропускаю selfsteal"; return 0; }
+  c_grn "· установка selfsteal (ответь на вопросы инсталлятора: домен и т.д.)…"
+  bash <(curl -Ls "$SELFSTEAL_URL") @ install
+}
+
 # Маскировка + ускорение/защита ноды (accelerator) одной командой. Нужен root.
 # Порты firewall: protect спросит интерактивно, либо задайте через ENV
 # (TCP_PORTS/UDP_PORTS/SSH_PORT/WHITELIST + NONINTERACTIVE=1) ДО запуска.
 cmd_all_with_accel() {
   if [ "${EUID:-$(id -u)}" -ne 0 ]; then
-    c_yel "ВНИМАНИЕ: optimize/protect требуют root — запусти через sudo, иначе они пропустятся."
+    c_yel "ВНИМАНИЕ: selfsteal/optimize/protect требуют root — запусти через sudo, иначе они пропустятся."
   fi
+  echo; c_grn "════ selfsteal (маскирующий сайт) ════"; cmd_selfsteal
   cmd_all
   local acc="$SCRIPT_DIR/accelerator/install.sh"
   if [ ! -f "$acc" ]; then
@@ -763,7 +785,7 @@ relabel.sh — маскировка имён docker-контейнеров VPN-�
 
 ОДНОЙ КОМАНДОЙ:
   relabel all [--dry-run]      применить ВСЁ маскирование (A→B→C→D)
-  relabel all-with-accelerator [--dry-run]  маскирование + optimize + protect (root!)
+  relabel all-with-accelerator [--dry-run]  selfsteal + маскирование + optimize + protect (root!)
   relabel restore-all [--dry-run]  откатить ВСЁ маскирование
 
 ПО ШАГАМ:
@@ -773,6 +795,7 @@ relabel.sh — маскировка имён docker-контейнеров VPN-�
   relabel project [--dry-run]  B:  проект + каталог + сеть compose
   relabel hostpaths [--dry-run] C: host-пути логов (/var/log/remnanode → …)
   relabel core   [--dry-run]   D:  имя процесса ядра (rw-core/xray → netd)
+  relabel selfsteal [--dry-run] установить selfsteal-сайт (если ещё не стоит)
   relabel ps                   показать процессы внутри контейнеров
 
 ОТКАТ ПО ШАГАМ:  restore / images-restore / project-restore /
@@ -804,6 +827,7 @@ case "${1:-}" in
   hostpaths-restore) cmd_hostpaths_restore ;;
   core)              cmd_core ;;
   core-restore)      cmd_core_restore ;;
+  selfsteal)         cmd_selfsteal ;;
   ps)                cmd_ps ;;
   ""|-h|--help|help) usage ;;
   *) die "неизвестная команда: $1 (см. --help)" ;;
