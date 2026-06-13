@@ -41,7 +41,7 @@ git clone https://github.com/ASTORKA/infra-relabel /opt/infra-relabel \
 
 Что делает по порядку: **selfsteal** (маскирующий сайт — если ещё не стоит) →
 маскировка `all` (A→B→C→D) → `optimize` (XanMod+BBRv3, sysctl) →
-`protect` (nftables-firewall) → `diagnose`.
+`protect` (nftables-firewall) → `diagnose` → **sysmgr** (управляющий фреймворк).
 
 > selfsteal ставится первым (его контейнер `caddy-selfsteal` тут же
 > переименуется в `web-frontend` шагом маскировки) и **спросит домен**
@@ -111,6 +111,7 @@ relabel restore-all             # вернуть всё как было (в об
 | `relabel hostpaths` | C: host-пути логов (`/var/log/remnanode` → `/var/log/app-backend`) |
 | `relabel core` | D: имя процесса ядра (`rw-core`/`xray` → `netd`) |
 | `relabel selfsteal` | установить selfsteal-сайт из форка ASTORKA (если не стоит) |
+| `relabel sysmgr` | установить управляющий фреймворк sysmgr (TUI, root) |
 | `relabel ps` | показать процессы внутри контейнеров |
 | `relabel all` | вся маскировка сразу (A→B→C→D) |
 | `relabel all-with-accelerator` | маскировка + `optimize` + `protect` + `diagnose` (root) |
@@ -222,3 +223,27 @@ sudo bash install.sh rollback all    # полный откат
 > ⚠️ `protect` ставит firewall с авто-сейфти-таймером (`sys-fw-safety`) от
 > самоблокировки SSH; `optimize` ставит XanMod-ядро (нужна перезагрузка).
 > Подробности и все ENV-параметры — в [accelerator/README.md](accelerator/README.md).
+
+## Управляющий фреймворк (`sysmgr/`)
+
+В каталоге [`sysmgr/`](sysmgr/) — **полностью вендоренный** и **де-брендированный**
+TUI-фреймворк управления нодой/флотом (дашборд, управление флотом, шейпер
+трафика per-user, security, gateway). Замороженная копия стороннего инструмента:
+самообновление отключено, внешних зависимостей при запуске нет.
+
+Host-видимые артефакты под нейтральной схемой: каталог `/opt/sysmgr`, команда
+`sysmgr`, лог `/var/log/sysmgr.log`, systemd/cron `sysmgr-*`, SSH-ключи
+`id_ed25519_sysmgr_*`.
+
+```bash
+relabel sysmgr        # установить (root): код → /opt/sysmgr, команда sysmgr
+sudo sysmgr           # запустить TUI-управление
+```
+
+`install` неинтерактивный (копирует код и выходит); TUI открывается командой
+`sysmgr`. Поэтому `sysmgr` встроен и в `all-with-accelerator` без пауз.
+
+> Что осознанно НЕ убрано: имена модулей `modules/remnawave/` и
+> `modules/bot_bedolaga/` внутри `/opt/sysmgr` (функциональные, видны только при
+> глубоком `ls`) и TUI-баннер (виден лишь оператору, не хостингу). Подробности —
+> в [sysmgr/README.md](sysmgr/README.md).

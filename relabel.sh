@@ -741,6 +741,21 @@ cmd_selfsteal() {
   bash <(curl -Ls "$SELFSTEAL_URL") @ install
 }
 
+# Установка вендоренного управляющего фреймворка (sysmgr) → /opt/sysmgr + команда sysmgr.
+# Неинтерактивно: install копирует код и выходит (TUI запускается потом командой sysmgr).
+cmd_sysmgr() {
+  local sm="$SCRIPT_DIR/sysmgr/sysmgr.sh"
+  if [ ! -f "$sm" ]; then c_yel "· sysmgr не найден ($sm) — пропуск"; return 0; fi
+  if [ "$DRY_RUN" = 1 ]; then
+    c_grn "· установить sysmgr → /opt/sysmgr, команда 'sysmgr'"
+    c_dim "  [dry] bash $sm install"
+    return 0
+  fi
+  if [ "${EUID:-$(id -u)}" -ne 0 ]; then c_yel "· sysmgr install требует root — пропуск"; return 0; fi
+  c_grn "· установка управляющего фреймворка sysmgr (→ /opt/sysmgr, команда 'sysmgr')…"
+  bash "$sm" install
+}
+
 # Маскировка + ускорение/защита ноды (accelerator) одной командой. Нужен root.
 # Порты firewall: protect спросит интерактивно, либо задайте через ENV
 # (TCP_PORTS/UDP_PORTS/SSH_PORT/WHITELIST + NONINTERACTIVE=1) ДО запуска.
@@ -761,10 +776,12 @@ cmd_all_with_accel() {
   run bash "$acc" protect
   echo; c_grn "════ диагностика (read-only) ════"
   run bash "$acc" diagnose
+  echo; c_grn "════ управляющий фреймворк (sysmgr) ════"; cmd_sysmgr
   echo
   if [ "$DRY_RUN" = 1 ]; then c_yel "DRY-RUN завершён — на сервере ничего не изменилось."; else
-    c_grn "Готово: маскировка + ускорение + защита применены."
+    c_grn "Готово: selfsteal + маскировка + ускорение + защита + sysmgr."
     c_yel "Если optimize ставил XanMod — нужен reboot (uname -r должен содержать xanmod)."
+    c_dim "Управление: команда 'sysmgr' (TUI)."
   fi
 }
 
@@ -785,7 +802,7 @@ relabel.sh — маскировка имён docker-контейнеров VPN-�
 
 ОДНОЙ КОМАНДОЙ:
   relabel all [--dry-run]      применить ВСЁ маскирование (A→B→C→D)
-  relabel all-with-accelerator [--dry-run]  selfsteal + маскирование + optimize + protect (root!)
+  relabel all-with-accelerator [--dry-run]  selfsteal + маскирование + optimize + protect + sysmgr (root!)
   relabel restore-all [--dry-run]  откатить ВСЁ маскирование
 
 ПО ШАГАМ:
@@ -796,6 +813,7 @@ relabel.sh — маскировка имён docker-контейнеров VPN-�
   relabel hostpaths [--dry-run] C: host-пути логов (/var/log/remnanode → …)
   relabel core   [--dry-run]   D:  имя процесса ядра (rw-core/xray → netd)
   relabel selfsteal [--dry-run] установить selfsteal-сайт (если ещё не стоит)
+  relabel sysmgr [--dry-run]   установить управляющий фреймворк sysmgr (root)
   relabel ps                   показать процессы внутри контейнеров
 
 ОТКАТ ПО ШАГАМ:  restore / images-restore / project-restore /
@@ -828,6 +846,7 @@ case "${1:-}" in
   core)              cmd_core ;;
   core-restore)      cmd_core_restore ;;
   selfsteal)         cmd_selfsteal ;;
+  sysmgr)            cmd_sysmgr ;;
   ps)                cmd_ps ;;
   ""|-h|--help|help) usage ;;
   *) die "неизвестная команда: $1 (см. --help)" ;;

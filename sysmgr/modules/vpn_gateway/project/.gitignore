@@ -1,0 +1,34 @@
+# Кэш Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Виртуальное окружение
+.venv/
+
+# Кэш тестов
+.pytest_cache/
+
+# Логи и временные файлы
+*.log
+edge/logs/*.log
+/tmp/
+
+# Локальные секреты/окружение
+.env
+.env.*
+edge/.env.edge
+
+# Активный конфиг с реальными доменами (не трекать в Git — использовать gateway.example.yml как шаблон)
+config/gateway.yml
+
+# Сертификаты и runtime-артефакты edge
+edge/certs/*.pem
+edge/letsencrypt/
+edge/acme-challenge/
+edge/logs/*.log
+edge/logs/*.json
+
+# IDE
+.vscode/
+.idea/

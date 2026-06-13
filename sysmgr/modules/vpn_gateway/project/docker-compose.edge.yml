@@ -1,0 +1,18 @@
+services:
+  edge-nginx:
+    image: nginx:1.27-alpine
+    container_name: vpn-edge-nginx
+    restart: unless-stopped
+    depends_on:
+      - vpn-gateway
+    env_file:
+      - ./edge/.env.edge
+    ports:
+      - "${EDGE_HTTP_PORT:-80}:80"
+      - "${EDGE_HTTPS_PORT:-443}:443"
+    volumes:
+      - ./edge/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./edge/nginx/templates:/etc/nginx/templates:ro
+      - ./edge/certs:/etc/nginx/certs:ro
+      - ./edge/acme-challenge:/var/www/acme-challenge:ro
+      - ./edge/logs:/var/log/nginx

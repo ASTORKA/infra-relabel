@@ -1,0 +1,142 @@
+# ============================================================
+# VPN GATEWAY — ПРИМЕР КОНФИГА ДЛЯ БЫСТРОГО СТАРТА
+#
+# Шаги:
+# 1) Скопируйте файл в config/gateway.yml
+# 2) Заполните поля в блоке "БЛОК ДЛЯ РЕДАКТИРОВАНИЯ"
+# 3) Запустите ./scripts/run-prod.sh
+# ============================================================
+
+# ============================================================
+# ✅ БЛОК ДЛЯ РЕДАКТИРОВАНИЯ (ОБЯЗАТЕЛЬНО ПОД СЕБЯ)
+# ============================================================
+quick_setup:
+  # Ваш публичный домен или IP, куда приходит трафик
+  # Пример: vpn.example.com
+  public_domain: vpn.example.com
+
+  # Реальный origin-домен вашего кабинета/бэкенда (наружу не показывается)
+  # Пример: cabinet.example.com
+  origin_domain: cabinet.example.com
+
+  # Схема доступа к origin: https (рекомендуется) или http
+  origin_scheme: https
+
+  # Дефолтный оффер/таргет для /start и главной страницы
+  # ⚠️ Можно ставить любое свое значение, не только wl-lte
+  default_offer: your-offer
+
+  # Email для ACME/Let's Encrypt (нужен только если acme_enabled: true)
+  acme_email: admin@example.com
+
+  # true — выпускать TLS-сертификат через Let's Encrypt
+  # false — если запускаетесь на IP без домена или сертификат ставите вручную
+  acme_enabled: true
+
+# ============================================================
+# ⚙️ ДОПОЛНИТЕЛЬНЫЕ ПОЛЕЗНЫЕ НАСТРОЙКИ (МОЖНО РЕДАКТИРОВАТЬ)
+# ============================================================
+project:
+  # Режим работы: reverse_proxy (рекомендуется) или redirect
+  mode: reverse_proxy
+
+  # URL, куда отправить пользователя если upstream временно недоступен
+  fallback_url: "/"
+
+  # Показывать ли /docs, /redoc, /openapi.json
+  docs_enabled: false
+
+edge:
+  # Публичный HTTP-порт edge (ACME + redirect на HTTPS)
+  http_port: 80
+
+  # Публичный HTTPS-порт edge
+  https_port: 443
+
+security:
+  # Убирать чувствительные origin-заголовки
+  hide_origin_headers: true
+
+  # Убирать заголовок server из ответов
+  strip_server_header: true
+
+  # Где завершается TLS: edge (рекомендуется)
+  tls_termination: edge
+
+  # Скрывать return-ссылку в платежных ответах через внутренний редирект-токен
+  hide_payment_return: true
+
+# ============================================================
+# ⛔ НЕ РЕДАКТИРОВАТЬ БЕЗ ПОНИМАНИЯ (СИСТЕМНЫЙ БЛОК)
+# ============================================================
+routing:
+  preserve_query: true
+  preserve_path: true
+  routes:
+    - name: buy-any
+      match: "/buy/*"
+      upstream_pool: cabinet_pool
+    - name: cabinet-assets
+      match: "/assets/*"
+      upstream_pool: cabinet_pool
+    - name: cabinet-fonts
+      match: "/fonts/*"
+      upstream_pool: cabinet_pool
+    - name: cabinet-api
+      match: "/api/*"
+      upstream_pool: cabinet_pool
+    - name: cabinet-favicon
+      match: "/favicon*"
+      upstream_pool: cabinet_pool
+    - name: cabinet-health
+      match: "/health/*"
+      upstream_pool: cabinet_pool
+    - name: default
+      match: "/*"
+      upstream_pool: landing_pool
+
+upstreams:
+  cabinet_pool:
+    strategy: first_alive
+    healthcheck:
+      path: "/"
+      interval_sec: 15
+      timeout_ms: 1500
+      fail_threshold: 2
+      pass_threshold: 1
+    # ВАЖНО: автоматически подменяется из quick_setup.origin_domain
+    targets:
+      - "https://cabinet-placeholder.invalid"
+
+  landing_pool:
+    strategy: first_alive
+    healthcheck:
+      path: "/"
+      interval_sec: 60
+      timeout_ms: 1500
+      fail_threshold: 1
+      pass_threshold: 1
+    targets:
+      - "http://local-landing"
+
+tracking:
+  pass_utm: true
+  allow_params:
+    - utm_source
+    - utm_medium
+    - utm_campaign
+    - utm_term
+    - utm_content
+    - gclid
+    - yclid
+
+landing:
+  mode: mirror_redirect
+  pages:
+    # Главная страница. mirror_target автоматически берется из quick_setup.default_offer.
+    - path: "/"
+      mirror_target: "your-offer"
+
+    # Пример дополнительного лендинга. Можно удалить, если не нужен.
+    - path: "/landing/business"
+      mirror_target: "business"

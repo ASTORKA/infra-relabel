@@ -1,0 +1,23 @@
+[DEFAULT]
+# Подставьте свои trusted IP/подсети чтобы не забанить себя
+ignoreip = 127.0.0.1/8 ::1
+bantime = 1h
+findtime = 10m
+maxretry = 30
+
+[nginx-edge-4xx]
+enabled = true
+filter = nginx-edge-4xx
+logpath = /opt/vpn-gateway-project/edge/logs/access.log
+findtime = 5m
+maxretry = 25
+bantime = 2h
+action = iptables-multiport[name=nginx-edge-4xx, port="http,https", protocol=tcp]
+
+[recidive]
+enabled = true
+logpath = /var/log/fail2ban.log
+banaction = iptables-allports
+findtime = 1d
+bantime = 7d
+maxretry = 5

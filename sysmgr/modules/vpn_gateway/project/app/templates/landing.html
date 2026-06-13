@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>{{ page.title }}</title>
+  <!-- favicon.svg — эндпоинт FastAPI, inline SVG (не зависит от файлов на диске) -->
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <!-- fallback для Safari и старых браузеров -->
+  <link rel="shortcut icon" href="/favicon.ico" type="image/x-icon">
+
+  <style>
+    :root {
+      --bg: #070b16;
+      --bg2: #0f1730;
+      --card: rgba(18, 26, 52, 0.75);
+      --line: rgba(115, 158, 255, 0.35);
+      --txt: #eaf0ff;
+      --muted: #9fb0da;
+      --cyan: #3cc8ff;
+      --violet: #7a7dff;
+      --ok: #4ade80;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--txt);
+      font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background:
+        radial-gradient(1200px 500px at 90% -10%, rgba(122,125,255,.16), transparent),
+        radial-gradient(900px 400px at 10% -10%, rgba(60,200,255,.13), transparent),
+        linear-gradient(180deg, var(--bg2), var(--bg));
+      min-height: 100vh;
+    }
+    .wrap { max-width: 1140px; margin: 0 auto; padding: 24px 20px 56px; }
+    .top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; }
+    .brand { font-weight: 700; letter-spacing: .2px; }
+    .badge {
+      border: 1px solid var(--line);
+      background: rgba(60,200,255,.08);
+      color: #cce5ff;
+      border-radius: 999px;
+      padding: 8px 12px;
+      font-size: 12px;
+    }
+    .hero {
+      border: 1px solid var(--line);
+      background: linear-gradient(180deg, rgba(255,255,255,.04), rgba(255,255,255,.015));
+      border-radius: 26px;
+      padding: 34px;
+      box-shadow: 0 0 0 1px rgba(80,110,200,.12) inset, 0 30px 80px rgba(7,11,22,.45);
+    }
+    h1 { margin: 0 0 10px; font-size: clamp(28px, 4vw, 46px); line-height: 1.08; }
+    .sub { margin: 0; color: var(--muted); font-size: clamp(15px, 2vw, 19px); max-width: 860px; }
+    .hero-cta { margin-top: 20px; display: flex; gap: 10px; flex-wrap: wrap; }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      text-decoration: none;
+      border-radius: 14px;
+      padding: 14px 22px;
+      font-weight: 700;
+      font-size: 15px;
+      border: 1px solid transparent;
+    }
+    .btn-primary {
+      color: #03111f;
+      background: linear-gradient(135deg, #69d8ff, #7a7dff);
+      box-shadow: 0 10px 30px rgba(72,155,255,.35);
+    }
+    .btn-ghost {
+      color: var(--txt);
+      border-color: var(--line);
+      background: rgba(255,255,255,.03);
+    }
+    .layout { margin-top: 18px; display: grid; grid-template-columns: 1.65fr 1fr; gap: 14px; }
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      padding: 18px;
+      background: var(--card);
+      backdrop-filter: blur(7px);
+    }
+    .ttl { margin: 0 0 12px; font-size: 13px; color: #c3d3ff; text-transform: uppercase; letter-spacing: .08em; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .feat { border: 1px solid rgba(130,161,245,.25); border-radius: 14px; padding: 12px; background: rgba(255,255,255,.02); }
+    .feat h3 { margin: 0 0 6px; font-size: 16px; }
+    .feat p { margin: 0; color: var(--muted); font-size: 14px; }
+    .check { color: var(--ok); font-weight: 700; margin-right: 7px; }
+    .plan { border: 1px solid rgba(130,161,245,.22); border-radius: 14px; padding: 12px; margin-bottom: 8px; }
+    .plan .name { font-weight: 700; }
+    .plan .meta { color: var(--muted); font-size: 14px; margin-top: 5px; }
+    .price { font-size: 28px; font-weight: 800; margin: 6px 0 0; color: #92d8ff; }
+    @media (max-width: 920px) { .layout { grid-template-columns: 1fr; } .grid { grid-template-columns: 1fr; } .hero { padding: 24px; } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="top">
+      <div class="brand">{{ page.brand }}</div>
+      <div class="badge">{{ page.badge }}</div>
+    </div>
+
+    <section class="hero">
+      <h1>{{ page.hero_title }}</h1>
+      <p class="sub">{{ page.hero_subtitle }}</p>
+      <div class="hero-cta">
+        <a class="btn btn-primary" href="{{ start_link }}">{{ page.primary_button_text }}</a>
+        {% if page.secondary_button_url %}
+        <a class="btn btn-ghost" href="{{ page.secondary_button_url }}">{{ page.secondary_button_text }}</a>
+        {% endif %}
+      </div>
+    </section>
+
+    <div class="layout">
+      <section class="card">
+        <h2 class="ttl">Преимущества</h2>
+        <div class="grid">
+          {% for feature in page.features %}
+          <article class="feat">
+            <h3><span class="check">✓</span>{{ feature.title }}</h3>
+            <p>{{ feature.text }}</p>
+          </article>
+          {% endfor %}
+        </div>
+      </section>
+
+      <aside class="card">
+        <h2 class="ttl">Популярные планы</h2>
+        {% for plan in page.plans %}
+        <article class="plan">
+          <div class="name">{{ plan.name }}</div>
+          <div class="meta">{{ plan.description }}</div>
+          <div class="meta">{{ plan.devices }} устройств</div>
+          <div class="price">{{ plan.price }}</div>
+        </article>
+        {% endfor %}
+      </aside>
+    </div>
+  </div>
+</body>
+</html>

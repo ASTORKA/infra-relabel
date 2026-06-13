@@ -1,0 +1,843 @@
+#!/bin/bash
+#   ( РОДИТЕЛЬ | КЛАВИША | НАЗВАНИЕ | ФУНКЦИЯ | ПОРЯДОК | ГРУППА | ОПИСАНИЕ )
+# @menu.manifest
+# @item( security | 1 | 🔥 Firewall (UFW) | show_firewall_menu | 10 | 10 | Настройка правил и портов. )
+#
+# firewall.sh - Управление Firewall (UFW)
+#
+
+# Вызывается из /modules/security/menu.sh
+
+_firewall_check_status() {
+    print_separator
+    info "Статус Firewall (UFW)"
+    if ! command -v ufw &> /dev/null; then
+        warn "UFW не установлен."
+    elif run_cmd ufw status | grep -q "inactive"; then
+        printf_description "Состояние: ${C_RED}Не активен (НЕТ ЗАЩИТЫ!)${C_RESET}"
+    else
+        printf_description "Состояние: ${C_GREEN}Активен${C_RESET}"
+    fi
+    print_separator
+}
+
+show_firewall_menu() {
+    while true; do
+        clear
+        enable_graceful_ctrlc
+        menu_header "🔥 Firewall (UFW)"
+        
+        echo -e "  ${C_CYAN}╔══════════════════════════════════════════════════════════${C_RESET}"
+        echo -e "  ${C_CYAN}║${C_RESET}  ${C_YELLOW}🔥 Firewall (UFW)${C_RESET}"
+        echo -e "  ${C_CYAN}╠══════════════════════════════════════════════════════════${C_RESET}"
+        echo -e "  ${C_CYAN}║${C_RESET}  ${C_WHITE}Что это:${C_RESET} Межсетевой экран для контроля доступа к портам."
+        echo -e "  ${C_CYAN}║${C_RESET}  ${C_WHITE}Как работает:${C_RESET} Блокирует все несанкционированные входящие"
+        echo -e "  ${C_CYAN}║${C_RESET}  подключения и защищает от базовых DDoS-атак"
+        echo -e "  ${C_CYAN}║${C_RESET}  (CONN/RATE лимиты) через before.rules."
+        echo -e "  ${C_CYAN}╚══════════════════════════════════════════════════════════${C_RESET}"
+        echo ""
+
+        _firewall_check_status
+        
+        echo ""
+        if ! command -v ufw &> /dev/null; then
+            printf_menu_option "i" "УСТАНОВИТЬ UFW FIREWALL" "${C_YELLOW}"
+        else
+            printf_menu_option "1" "Показать текущие правила"
+            printf_menu_option "2" "Перенастроить firewall (мастер)"
+            printf_menu_option "3" "Добавить правило"
+            printf_menu_option "4" "Удалить правило"
+            echo ""
+            printf_menu_option "5" "⚙️ Anti-DDoS лимиты (CONN/RATE)"
+            printf_menu_option "6" "📊 Логи и Аналитика (Кто атакует?)"
+            echo ""
+            printf_menu_option "s" "Показать статус UFW (systemd)"
+            printf_menu_option "e" "Включить UFW"
+            printf_menu_option "d" "Выключить UFW"
+            printf_menu_option "r" "Полная переустановка UFW ${C_RED}(ОПАСНО)${C_RESET}"
+        fi
+        echo ""
+        printf_menu_option "b" "Назад"
+        echo ""
+
+        local choice
+        choice=$(safe_read "Выберите действие" "") || { return 2; }
+        
+        local ret=0
+        case "$choice" in
+            i|I)
+                if ! command -v ufw &> /dev/null; then
+                    _firewall_install_ufw; ret=$?
+                fi
+                ;;
+            1)
+                _firewall_show_rules; ret=$?
+                ;;
+            2)
+                _firewall_reconfigure_wizard; ret=$?
+                ;;
+            3)
+                _firewall_add_rule; ret=$?
+                ;;
+            4)
+                _firewall_delete_rule; ret=$?
+                ;;
+            5)
+                _firewall_antiddos_menu; ret=$?
+                ;;
+            6)
+                _firewall_logs_analytics; ret=$?
+                ;;
+            s|S)
+                if ! command -v ufw &> /dev/null; then err "UFW не установлен."; ret=1; else run_cmd systemctl status ufw; ret=$?; fi
+                ;;
+            e|E)
+                if ! command -v ufw &>/dev/null; then err "UFW не установлен."; ret=1
+                else
+                    info "Включаю UFW..."
+                    # Предупреждение если Docker запущен
+                    if command -v docker &>/dev/null && docker ps &>/dev/null 2>&1; then
+                        echo ""
+                        echo -e "  ${C_YELLOW}⚠️  ВНИМАНИЕ: Обнаружен Docker!${C_RESET}"
+                        echo -e "  UFW и Docker несовместимы без дополнительной настройки."
+                        echo -e "  После включения UFW Docker-контейнеры могут потерять доступ к сети."
+                        echo ""
+                        if ask_yes_no "Применить исправление UFW+Docker автоматически?" "y"; then
+                            _firewall_fix_docker_ufw
+                        fi
+                    fi
+                    echo "y" | run_cmd ufw enable; ret=$?
+                fi
+                ;;
+            d|D)
+                if ! command -v ufw &> /dev/null; then err "UFW не установлен."; ret=1; elif ask_yes_no "Вы уверены, что хотите отключить firewall?"; then
+                    warn "Отключаю UFW..."
+                    echo "y" | run_cmd ufw disable; ret=$?
+                else
+                    ret=2
+                fi
+                ;;
+            r|R)
+                _firewall_reinstall; ret=$?
+                ;;
+            b | B) 
+                return 2
+                ;;
+            *)
+                warn "Неверный выбор"; ret=2
+                ;;
+        esac
+        [[ $ret -ne 2 ]] && wait_for_enter
+        disable_graceful_ctrlc
+    done
+}
+
+_firewall_show_rules() {
+    print_separator
+    info "Текущие правила Firewall (UFW)"
+    print_separator
+
+    if ! command -v ufw &> /dev/null; then
+        err "UFW не установлен. Установите его: apt install ufw"
+        return 1
+    fi
+    
+    if run_cmd ufw status | grep -q "inactive"; then
+        warn "UFW не активен. Все порты открыты!"
+        return 1
+    fi
+    
+    ok "UFW активен."
+    
+    info "Политика по умолчанию:"
+    local default_in
+    default_in=$(run_cmd ufw status verbose | grep "Default:")
+    if echo "$default_in" | grep -q "deny (incoming)"; then
+        printf_description "  Входящие: ${C_GREEN}Блокируются${C_RESET} (рекомендуется)"
+    else
+        printf_description "  Входящие: ${C_RED}Разрешены${C_RESET} (опасно!)"
+    fi
+     if echo "$default_in" | grep -q "allow (outgoing)"; then
+        printf_description "  Исходящие: ${C_GREEN}Разрешены${C_RESET} (стандарт)"
+    else
+        printf_description "  Исходящие: ${C_RED}Блокируются${C_RESET} (нестандартно)"
+    fi
+
+    info "Активные правила:"
+    
+    local rules_output
+    rules_output=$(run_cmd ufw status)
+    
+    if ! echo "$rules_output" | grep -q "ALLOW"; then
+        warn "Не найдено разрешающих правил."
+        return
+    fi
+    
+    # Получаем текущий SSH порт
+    local ssh_port
+    ssh_port=$(grep "^Port " /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}')
+    ssh_port=${ssh_port:-22}
+    
+    echo "$rules_output" | while IFS= read -r line; do
+        if ! echo "$line" | grep -q "ALLOW"; then continue; fi
+        if echo "$line" | grep -qE "\(v6\)"; then continue; fi # Skip IPv6 for brevity
+
+        local target action source
+        # Use awk to handle potentially inconsistent spacing
+        target=$(echo "$line" | awk '{print $1}')
+        action=$(echo "$line" | awk '{print $2}')
+        source=$(echo "$line" | awk '{print $3}')
+        
+        if [[ "$action" != "ALLOW" ]]; then continue; fi
+        
+        local port_num
+        port_num=$(echo "$target" | cut -d'/' -f1)
+        
+        if ! [[ "$port_num" =~ ^[0-9]+$ ]]; then
+             if [[ "$target" == "Anywhere" ]]; then
+                printf_description "  ${C_GREEN}● Полный доступ${C_RESET} ← от ${C_CYAN}${source}${C_RESET}"
+             fi
+             continue
+        fi
+
+        local desc=""
+        if [[ "$port_num" == "$ssh_port" ]]; then
+            desc="SSH"
+        else
+            case "$port_num" in
+                22) desc="SSH (стандартный)" ;;
+                80) desc="HTTP" ;;
+                443) desc="HTTPS/VPN" ;;
+                2222) desc="Панель/Нода" ;;
+                3306) desc="MySQL" ;;
+            esac
+        fi
+        
+        local source_display="для всех"
+        if [[ "$source" != "Anywhere" ]]; then
+            source_display="только с ${C_CYAN}${source}${C_RESET}"
+        fi
+        
+        printf_description "  ${C_YELLOW}● Порт ${C_CYAN}${target}${C_RESET} открыт ${source_display} ${C_WHITE}${desc:+($desc)}${C_RESET}"
+    done
+}
+
+_firewall_reconfigure_wizard() {
+    if ! command -v ufw &> /dev/null; then
+        err "UFW не установлен. Действие отменено."
+        return 1
+    fi
+
+    print_separator
+    info "Мастер перенастройки Firewall"
+    print_separator
+    
+    if ! ask_yes_no "Мастер сбросит все текущие правила и создаст новые. Продолжить?"; then
+        info "Отмена."
+        return 2
+    fi
+
+    echo ""
+    info "Шаг 1: Роль сервера"
+    local role_choice
+    role_choice=$(ask_selection "" "Это главный сервер (Панель управления)" "Это управляемый узел (Нода Skynet)") || return 2
+
+    echo ""
+    info "Шаг 2: Настройка доступа"
+    
+    local ssh_port
+    ssh_port=$(get_config_var "SSH_PORT")
+    ssh_port=${ssh_port:-22}
+    ssh_port=$(safe_read "SSH порт" "$ssh_port") || return 2
+
+    local admin_ip
+    admin_ip=$(safe_read "IP администратора (оставьте пустым для доступа отовсюду)" "") || return 2
+    if [[ -n "$admin_ip" ]] && ! validate_ip "$admin_ip"; then
+        err "Некорректный IP администратора."
+        return 1
+    fi
+
+    local panel_ip=""
+    if [[ "$role_choice" == "2" ]]; then # Если это Нода
+        panel_ip=$(ask_non_empty "IP адрес Панели управления (для полного доступа)") || return 2
+        if ! validate_ip "$panel_ip"; then
+            err "Некорректный IP панели."
+            return 1
+        fi
+    fi
+    
+    # Отключаем IPv6 в UFW
+    if [[ -f "/etc/default/ufw" ]] && grep -q "^IPV6=yes" "/etc/default/ufw"; then
+        run_cmd sed -i 's/^IPV6=yes/IPV6=no/' "/etc/default/ufw"
+    fi
+
+    info "Применяю новые правила..."
+    run_cmd ufw --force reset
+    run_cmd ufw default deny incoming
+    run_cmd ufw default allow outgoing
+
+    # SSH
+    if [[ -n "$admin_ip" ]]; then
+        run_cmd ufw allow from "$admin_ip" to any port "$ssh_port" proto tcp comment 'Admin SSH'
+        ok "SSH (порт $ssh_port) разрешен для $admin_ip"
+    else
+        run_cmd ufw allow "$ssh_port"/tcp comment 'SSH'
+        warn "SSH (порт $ssh_port) разрешен для всех IP!"
+    fi
+
+    if [[ "$role_choice" == "1" ]]; then # Панель
+        run_cmd ufw allow 80/tcp comment 'HTTP'
+        run_cmd ufw allow 443/tcp comment 'HTTPS'
+        ok "Открыты порты 80 (HTTP) и 443 (HTTPS)."
+    else # Нода
+        if [[ -n "$panel_ip" ]]; then
+            run_cmd ufw allow from "$panel_ip" comment 'Panel Full Access'
+            ok "Предоставлен полный доступ для Панели ($panel_ip)."
+        fi
+        run_cmd ufw allow 443/tcp comment 'VPN/HTTPS'
+        ok "Открыт порт 443 (VPN/HTTPS)."
+        
+        if ask_yes_no "Открыть доп. порты для VPN на ноде?"; then
+            local extra_ports
+            extra_ports=$(safe_read "Введите порты через пробел (напр. 8443 9443)" "")
+            for port in $extra_ports; do
+                if validate_port "$port"; then
+                    run_cmd ufw allow "$port" comment 'Custom VPN'
+                    ok "Открыт дополнительный порт $port"
+                else
+                    warn "Пропущен некорректный порт: $port"
+                fi
+            done
+        fi
+    fi
+    
+    echo ""
+    if ask_yes_no "Все правила добавлены. Включить firewall?"; then
+        echo "y" | run_cmd ufw enable
+        ok "Firewall включен и работает."
+    fi
+}
+
+_firewall_add_rule() {
+    if ! command -v ufw &> /dev/null; then
+        err "UFW не установлен. Действие отменено."
+        return 1
+    fi
+
+    print_separator
+    info "Добавление нового правила UFW"
+    print_separator
+
+    printf_menu_option "1" "Открыть порт"
+    printf_menu_option "2" "Добавить IP в whitelist (полный доступ)"
+    printf_menu_option "b" "Назад"
+    echo ""
+    
+    local choice
+    choice=$(safe_read "Выберите тип правила" "") || return 2
+
+    case "$choice" in
+        1)
+            local port
+            port=$(ask_non_empty "Какой порт открыть?") || return 2
+            if ! validate_port "$port"; then
+                err "Некорректный номер порта."
+                return 1
+            fi
+
+            local ip
+            ip=$(safe_read "Разрешить только для одного IP? (оставьте пустым для всех)" "") || return 2
+            if [[ -n "$ip" ]] && ! validate_ip "$ip"; then
+                err "Некорректный IP адрес."
+                return 1
+            fi
+
+            if [[ -n "$ip" ]]; then
+                if ask_yes_no "Открыть порт ${port} только для IP ${ip}?"; then
+                    run_cmd ufw allow from "$ip" to any port "$port" comment "Manual Rule"
+                    # Если фикс докера применен, добавляем и в route только если порт в докере
+                    if grep -q "Sysmgr Docker UFW Fix" /etc/ufw/after.rules 2>/dev/null; then
+                        if docker ps --format "{{.Ports}}" 2>/dev/null | grep -oE "0.0.0.0:${port}" >/dev/null; then
+                            run_cmd ufw route allow from "$ip" to any port "$port" comment "Docker Sync" >/dev/null 2>&1 || true
+                        fi
+                    fi
+                    ok "Правило добавлено (включая Docker Route)."
+                else
+                    return 2
+                fi
+            else
+                if ask_yes_no "Открыть порт ${port} для всех?"; then
+                    run_cmd ufw allow "$port" comment "Manual Rule"
+                    # Если фикс докера применен, добавляем и в route только если порт в докере
+                    if grep -q "Sysmgr Docker UFW Fix" /etc/ufw/after.rules 2>/dev/null; then
+                        if docker ps --format "{{.Ports}}" 2>/dev/null | grep -oE "0.0.0.0:${port}" >/dev/null; then
+                            run_cmd ufw route allow "$port" comment "Docker Sync" >/dev/null 2>&1 || true
+                        fi
+                    fi
+                    ok "Правило добавлено (включая Docker Route)."
+                else
+                    return 2
+                fi
+            fi
+            ;;
+        2)
+            local ip
+            ip=$(ask_non_empty "Какой IP добавить в whitelist?") || return 2
+            if ! validate_ip "$ip"; then
+                err "Некорректный IP адрес."
+                return 1
+            fi
+
+            if ask_yes_no "Дать полный доступ IP ${ip} к серверу и Docker-контейнерам?"; then
+                # 1. Локальный UFW
+                run_cmd ufw allow from "$ip" comment "Manual Whitelist"
+                
+                # 2. Docker Route (если фикс применен)
+                if grep -q "Sysmgr Docker UFW Fix" /etc/ufw/after.rules 2>/dev/null; then
+                    run_cmd ufw route allow from "$ip" comment "Docker Sync Whitelist" >/dev/null 2>&1 || true
+                fi
+                
+                # 3. Интеграция с Глобальным Белым Списком
+                if ask_yes_no "Добавить этот IP также в Глобальный Белый Список (для Fail2Ban и Geo-Block)?"; then
+                    if command -v global_whitelist_add_ip &>/dev/null; then
+                        global_whitelist_add_ip "$ip" "Added via Firewall Menu"
+                        ok "IP ${ip} добавлен в Глобальный Белый Список."
+                    else
+                        # Если функция не загружена, попробуем через файл напрямую или предложим зайти в меню
+                        warn "Модуль Глобального списка не загружен. Добавьте его через меню [w]."
+                    fi
+                fi
+                
+                ok "IP ${ip} добавлен в whitelist Firewall."
+            else
+                return 2
+            fi
+            ;;
+        b|B)
+            return 2
+            ;;
+        *)
+            warn "Неверный выбор"
+            return 2
+            ;;
+    esac
+}
+
+_firewall_delete_rule() {
+    if ! command -v ufw &> /dev/null; then
+        err "UFW не установлен. Действие отменено."
+        return 1
+    fi
+
+    print_separator
+    info "Удаление правила UFW"
+    print_separator
+
+    if ! run_cmd ufw status numbered | grep -q "\["; then
+        warn "Нет правил для удаления."
+        return 1
+    fi
+    
+    run_cmd ufw status numbered
+    echo ""
+
+    local rule_num
+    rule_num=$(ask_non_empty "Введите номер правила для удаления") || return 2
+
+    if ! [[ "$rule_num" =~ ^[0-9]+$ ]]; then
+        err "Нужно ввести число."
+        return 1
+    fi
+
+    # Check if rule exists
+    if ! run_cmd ufw status numbered | grep -q "\[\s*${rule_num}\s*\]"; then
+        err "Правила с номером ${rule_num} не существует."
+        return 1
+    fi
+
+    if ask_yes_no "Вы уверены, что хотите удалить правило номер ${rule_num}?"; then
+        echo "y" | run_cmd ufw delete "$rule_num"
+        ok "Правило ${rule_num} удалено."
+    else
+        return 2
+    fi
+}
+
+# ============================================================ #
+#            ANTI-DDOS ЛИМИТЫ (CONN/RATE в before.rules)       #
+# ============================================================ #
+
+ANTIDDOS_MARKER_START="# --- НАЧАЛО: Sysmgr Anti-DDoS ---"
+ANTIDDOS_MARKER_END="# --- КОНЕЦ: Sysmgr Anti-DDoS ---"
+
+_firewall_antiddos_menu() {
+    while true; do
+        clear
+        enable_graceful_ctrlc
+        menu_header "⚙️ Anti-DDoS лимиты"
+        printf_description "Управление CONN/RATE лимитами в UFW before.rules."
+
+        # Показываем текущие лимиты
+        local before_rules="/etc/ufw/before.rules"
+        if [[ -f "$before_rules" ]] && grep -q "$ANTIDDOS_MARKER_START" "$before_rules"; then
+            local conn_limit rate_limit
+            conn_limit=$(grep "connlimit-above" "$before_rules" | head -1 | grep -oP '\d+' | tail -1)
+            rate_limit=$(grep "hashlimit-above" "$before_rules" | head -1 | grep -oP '[0-9]+/sec' | head -1)
+            info "Текущие лимиты:"
+            printf_description "  CONN: ${C_CYAN}${conn_limit:-не задан}${C_RESET} одновременных подключений"
+            printf_description "  RATE: ${C_CYAN}${rate_limit:-не задан}${C_RESET}"
+        else
+            warn "Anti-DDoS лимиты не настроены."
+        fi
+
+        print_separator
+        echo ""
+        printf_menu_option "1" "🔧 Настроить лимиты"
+        printf_menu_option "2" "🗑️  Удалить все лимиты"
+        printf_menu_option "3" "📋 Показать блок в before.rules"
+        echo ""
+        printf_menu_option "b" "Назад"
+        echo ""
+
+        local choice
+        choice=$(safe_read "Выберите действие" "") || { return 2; }
+
+        local ret=0
+        case "$choice" in
+            1) _antiddos_setup_limits; ret=$?;;
+            2)
+                if ask_yes_no "Удалить все Anti-DDoS лимиты?"; then
+                    _antiddos_remove_block
+                    run_cmd ufw reload 2>/dev/null || true
+                    ok "Anti-DDoS лимиты удалены."
+                    ret=0
+                else
+                    ret=2
+                fi
+                ;;
+            3)
+                if [[ -f "$before_rules" ]]; then
+                    sed -n "/${ANTIDDOS_MARKER_START}/,/${ANTIDDOS_MARKER_END}/p" "$before_rules"
+                    ret=0
+                else
+                    warn "Файл before.rules не найден."
+                    ret=1
+                fi
+                ;;
+            b|B) return 2;;
+            *) warn "Неверный выбор"; ret=2;;
+        esac
+        [[ $ret -ne 2 ]] && wait_for_enter
+        disable_graceful_ctrlc
+    done
+}
+
+_antiddos_setup_limits() {
+    print_separator
+    info "Настройка Anti-DDoS лимитов"
+    print_separator
+
+    local conn_limit rate_limit
+    conn_limit=$(ask_number_in_range "Лимит подключений (CONN, рекомендуется 50-150)" 10 1000 "100") || return 2
+    rate_limit=$(ask_number_in_range "Лимит пакетов/сек (RATE, рекомендуется 25-100)" 5 500 "50") || return 2
+
+    info "Применяю: CONN=${conn_limit}, RATE=${rate_limit}/sec..."
+
+    # Удаляем старый блок
+    _antiddos_remove_block
+
+    local before_rules="/etc/ufw/before.rules"
+    [[ ! -f "$before_rules" ]] && { err "Файл before.rules не найден!"; return; }
+
+    # Собираем whitelist IP
+    local wl_rules=""
+    if command -v global_whitelist_get_ips &>/dev/null; then
+        local ips
+        mapfile -t ips < <(global_whitelist_get_ips)
+        for ip in "${ips[@]}"; do
+            wl_rules+="# Whitelist: ${ip}\n-A ufw-before-input -s ${ip} -j ACCEPT\n"
+        done
+    fi
+
+    # Вставляем через Python (безопасная точечная вставка)
+    run_cmd python3 - "$before_rules" "$conn_limit" "$rate_limit" "$wl_rules" <<'PYEOF'
+import sys, re
+rules_file = sys.argv[1]
+conn = sys.argv[2]
+rate = sys.argv[3]
+wl = sys.argv[4] if len(sys.argv) > 4 else ""
+
+with open(rules_file, 'r') as f:
+    content = f.read()
+
+block = f"""
+{wl}# --- НАЧАЛО: Sysmgr Anti-DDoS ---
+# CONN limit: max {conn} connections per IP
+-A ufw-before-input -p tcp --syn -m connlimit --connlimit-above {conn} --connlimit-mask 32 -j DROP
+# RATE limit: max {rate} packets/sec per IP
+-A ufw-before-input -p tcp -m hashlimit --hashlimit-above {rate}/sec --hashlimit-burst {int(int(rate)*2)} --hashlimit-mode srcip --hashlimit-name sysmgr_rate -j DROP
+# ICMP flood protection
+-A ufw-before-input -p icmp --icmp-type echo-request -m limit --limit 1/s --limit-burst 4 -j ACCEPT
+-A ufw-before-input -p icmp --icmp-type echo-request -j DROP
+# --- КОНЕЦ: Sysmgr Anti-DDoS ---
+"""
+
+target = ':ufw-before-input - [0:0]'
+if target in content:
+    content = content.replace(target, target + block, 1)
+    with open(rules_file, 'w') as f:
+        f.write(content)
+    print("OK")
+else:
+    print("ERROR: target not found")
+    sys.exit(1)
+PYEOF
+
+    if [[ $? -eq 0 ]]; then
+        run_cmd ufw reload 2>/dev/null || true
+        ok "Anti-DDoS лимиты применены: CONN=${conn_limit}, RATE=${rate_limit}/sec"
+    else
+        err "Не удалось применить лимиты."
+    fi
+}
+
+_antiddos_remove_block() {
+    local before_rules="/etc/ufw/before.rules"
+    [[ ! -f "$before_rules" ]] && return
+
+    run_cmd python3 - <<'PYEOF'
+import re
+with open('/etc/ufw/before.rules', 'r') as f:
+    content = f.read()
+content = re.sub(r'\n# --- НАЧАЛО: Sysmgr Anti-DDoS ---.*?# --- КОНЕЦ: Sysmgr Anti-DDoS ---\n', '', content, flags=re.DOTALL)
+# Also remove whitelist entries above it
+content = re.sub(r'# Whitelist: [^\n]+\n-A ufw-before-input -s [^\n]+ -j ACCEPT\n', '', content)
+with open('/etc/ufw/before.rules', 'w') as f:
+    f.write(content)
+PYEOF
+}
+
+# ============================================================ #
+#         UFW + DOCKER СОВМЕСТИМОСТЬ                           #
+# ============================================================ #
+
+# Применяет fix для корректной работы UFW совместно с Docker.
+# Без этого fix UFW блокирует входящий трафик к Docker-контейнерам,
+# даже если соответствующие порты открыты в UFW правилах.
+# Причина: Docker добавляет свои цепочки iptables ПОСЛЕ цепочек UFW.
+_firewall_fix_docker_ufw() {
+    print_separator
+    info "Применяю исправление UFW + Docker..."
+    print_separator
+
+    # 1. Разрешаем трафик из Docker-подсетей
+    run_cmd ufw allow from 172.16.0.0/12 comment 'Docker networks' 2>/dev/null || true
+    run_cmd ufw allow from 192.168.0.0/16 comment 'Docker bridge' 2>/dev/null || true
+    ok "Разрешены Docker-подсети (172.16.0.0/12, 192.168.0.0/16)"
+
+    # 2. Добавляем правила в /etc/ufw/after.rules для DOCKER-USER chain
+    # Эти правила выживают после ufw reset и не затрагиваются обычными правилами UFW
+    local after_rules="/etc/ufw/after.rules"
+    local marker_start="# --- НАЧАЛО: Sysmgr Docker UFW Fix ---"
+    local marker_end="# --- КОНЕЦ: Sysmgr Docker UFW Fix ---"
+
+    # Определяем имя основного интерфейса
+    local iface
+    iface=$(ip -o -4 route show to default 2>/dev/null | awk '{print $5}' | head -1)
+    iface=${iface:-eth0}
+
+    if [[ -f "$after_rules" ]] && grep -q "$marker_start" "$after_rules"; then
+        info "Блок Docker UFW Fix уже существует в after.rules. Обновляю..."
+        run_cmd python3 - <<PYEOF
+import re
+with open('${after_rules}', 'r') as f:
+    content = f.read()
+content = re.sub(r'\n${marker_start}.*?${marker_end}\n', '', content, flags=re.DOTALL)
+with open('${after_rules}', 'w') as f:
+    f.write(content)
+PYEOF
+    fi
+
+    # Вставляем блок перед последним COMMIT в after.rules
+    run_cmd python3 - "$after_rules" "$marker_start" "$marker_end" "$iface" <<'PYEOF'
+import sys
+rules_file, marker_s, marker_e, iface = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+with open(rules_file, 'r') as f:
+    content = f.read()
+
+docker_block = f"""
+{marker_s}
+# Эти правила заставляют Docker-трафик проходить через фильтрацию UFW.
+# Теперь команды типа 'ufw route allow/deny' будут корректно работать для контейнеров.
+:DOCKER-USER - [0:0]
+-A DOCKER-USER -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN
+-A DOCKER-USER -i {iface} -p udp -m udp --sport 53 --dport 1024:65535 -j RETURN
+-A DOCKER-USER -i {iface} -j ufw-user-forward
+-A DOCKER-USER -i {iface} -j DROP
+-A DOCKER-USER -j RETURN
+{marker_e}
+"""
+
+# Вставляем перед последней строкой COMMIT
+if 'COMMIT' in content:
+    idx = content.rfind('COMMIT')
+    content = content[:idx] + docker_block + content[idx:]
+else:
+    content += docker_block
+
+with open(rules_file, 'w') as f:
+    f.write(content)
+print('OK')
+PYEOF
+
+    if [[ $? -eq 0 ]]; then
+        ok "Блок Docker UFW Fix добавлен в ${after_rules} (интерфейс: ${iface})"
+        
+        # 3. Автоматически переносим только те правила, которые реально нужны Docker
+        info "Синхронизирую только порты Docker-контейнеров с Firewall (route)..."
+        
+        # Получаем список портов, которые реально проброшены в Docker
+        local docker_ports
+        docker_ports=$(docker ps --format "{{.Ports}}" 2>/dev/null | grep -oE '0.0.0.0:[0-9]+' | cut -d: -f2 | sort -u)
+        
+        # Также берем список портов, разрешенных в UFW IN
+        local ufw_in_ports
+        ufw_in_ports=$(ufw status | grep "ALLOW" | grep -v "(v6)" | awk '{print $1}' | grep -oE '^[0-9]+' | sort -u)
+        
+        # Пересекаем их: разрешаем в route только то, что и открыто в UFW, и есть в Docker
+        for p in $ufw_in_ports; do
+            if echo "$docker_ports" | grep -qx "$p"; then
+                run_cmd ufw route allow "$p" >/dev/null 2>&1 || true
+            else
+                # Если порта нет в Docker, но он был в route (очистка от лишнего)
+                run_cmd ufw route delete allow "$p" >/dev/null 2>&1 || true
+            fi
+        done
+        
+        run_cmd ufw reload 2>/dev/null || true
+        ok "UFW перезагружен. Все текущие порты теперь открыты и для Docker-контейнеров."
+    else
+        err "Не удалось добавить блок в after.rules. Добавьте вручную."
+        warn "Руководство: https://docs.docker.com/network/iptables/"
+    fi
+}
+
+
+_firewall_logs_analytics() {
+    print_separator
+    menu_header "📊 Логи и Аналитика UFW"
+    print_separator
+
+    if ! command -v ufw &>/dev/null; then
+        err "UFW не установлен."
+        return 1
+    fi
+
+    # Автоматически гарантируем включение логов на низком уровне
+    run_cmd ufw logging low >/dev/null 2>&1 || true
+
+    local log_file; log_file=$(find_log_file "ufw")
+    if [[ ! -f "$log_file" ]]; then
+        warn "Файлы логов UFW не найдены."
+        return 1
+    fi
+
+    # ТОП-10 атакующих IP
+    info "ТОП-10 IP, заблокированных UFW:"
+    print_separator "-" 50
+    run_cmd grep "\[UFW BLOCK\]" "$log_file" 2>/dev/null | \
+        grep -oP 'SRC=\K[0-9.]+' | \
+        sort | uniq -c | sort -rn | head -10 | \
+        while read count ip; do
+            printf "  ${C_RED}%-8s${C_RESET} ${C_CYAN}%s${C_RESET}\n" "${count} блок." "$ip"
+        done
+
+    echo ""
+
+    # ТОП-10 портов
+    info "ТОП-10 атакуемых портов:"
+    print_separator "-" 50
+    run_cmd grep "\[UFW BLOCK\]" "$log_file" 2>/dev/null | \
+        grep -oP 'DPT=\K[0-9]+' | \
+        sort | uniq -c | sort -rn | head -10 | \
+        while read count port; do
+            printf "  ${C_YELLOW}%-8s${C_RESET} Порт ${C_CYAN}%s${C_RESET}\n" "${count} блок." "$port"
+        done
+
+    echo ""
+
+    # Общая статистика
+    local total_blocks
+    total_blocks=$(run_cmd grep -c "\[UFW BLOCK\]" "$log_file" 2>/dev/null || echo "0")
+    ok "Всего блокировок в логе: ${C_RED}${total_blocks}${C_RESET}"
+
+    echo ""
+    if ask_yes_no "Показать живой мониторинг блокировок? (Ctrl+C для выхода)" "n"; then
+        enable_graceful_ctrlc
+        run_cmd tail -f "$log_file" | grep --line-buffered "\[UFW BLOCK\]"
+        disable_graceful_ctrlc
+    fi
+}
+
+_firewall_install_ufw() {
+    print_separator
+    info "Установка UFW Firewall..."
+    
+    if run_cmd apt update && run_cmd apt install -y ufw; then
+        ok "UFW успешно установлен."
+        
+        # Сразу предлагаем базовую настройку, чтобы юзер не закрыл себе доступ
+        info "Настройка базовых правил (SSH разрешен)..."
+        local ssh_port; ssh_port=$(grep "^Port " /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}')
+        ssh_port=${ssh_port:-22}
+        
+        run_cmd ufw allow "$ssh_port"
+        run_cmd ufw allow 80/tcp
+        run_cmd ufw allow 443/tcp
+        run_cmd ufw default deny incoming
+        run_cmd ufw default allow outgoing
+        run_cmd ufw logging low >/dev/null 2>&1 || true
+        
+        # Отключаем IPv6, так как на некоторых серверах ip6tables сломан и крашит UFW
+        if [[ -f "/etc/default/ufw" ]] && grep -q "^IPV6=yes" "/etc/default/ufw"; then
+            run_cmd sed -i 's/^IPV6=yes/IPV6=no/' "/etc/default/ufw"
+        fi
+        
+        if ask_yes_no "Включить Firewall сейчас?"; then
+            # Проверка Docker при первом включении
+            if command -v docker &>/dev/null && docker ps &>/dev/null 2>&1; then
+                echo ""
+                echo -e "  ${C_YELLOW}⚠️  ВНИМАНИЕ: Обнаружен Docker!${C_RESET}"
+                echo -e "  UFW и Docker несовместимы без дополнительной настройки."
+                if ask_yes_no "Применить профессиональное исправление UFW+Docker автоматически?" "y"; then
+                    _firewall_fix_docker_ufw
+                fi
+            fi
+            echo "y" | run_cmd ufw enable
+        else
+            return 2
+        fi
+    else
+        err "Не удалось установить UFW. Проверьте интернет-соединение или репозитории."
+        return 1
+    fi
+}
+
+_firewall_reinstall() {
+    print_separator
+    warn "ПОЛНАЯ ПЕРЕУСТАНОВКА FIREWALL (UFW)"
+    print_separator
+    echo -e "  ${C_RED}ВНИМАНИЕ! Это удалит текущие конфигурации и сбросит все порты.${C_RESET}"
+    echo -e "  ${C_RED}Все ваши пользовательские правила будут безвозвратно удалены!${C_RESET}"
+    if ! ask_yes_no "Продолжить полную очистку и переустановку?"; then
+        return 2
+    fi
+    info "Сбрасываем UFW..."
+    echo "y" | run_cmd ufw --force reset 2>/dev/null || true
+    info "Удаляем UFW и конфиги..."
+    run_cmd apt purge -y ufw || true
+    run_cmd apt autoremove -y || true
+    run_cmd rm -rf /etc/ufw
+    info "Устанавливаем UFW заново..."
+    _firewall_install_ufw
+}

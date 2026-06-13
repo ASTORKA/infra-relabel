@@ -1,0 +1,400 @@
+import base64
+import os
+from urllib.parse import parse_qsl, unquote, urlencode, urljoin, urlsplit, urlunsplit
+
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+
+from app.config import load_config
+from app.mirror_manager import MirrorManager
+from app.proxy import forward_request
+from app.router_logic import match_route
+from app.url_utils import merge_query
+
+# ── Favicon: щит с чеком, градиент cyan → violet на тёмном фоне ──
+# Инлайн в Python-коде — не требует файлов на диске, работает в любом окружении
+_FAVICON_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
+    '<defs><linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%">'
+    '<stop offset="0%" stop-color="#3cc8ff"/>'
+    '<stop offset="100%" stop-color="#7a7dff"/>'
+    '</linearGradient></defs>'
+    '<rect width="32" height="32" rx="8" fill="#0f1730"/>'
+    '<path d="M16 4 L26 8 L26 17 C26 22.5 21.5 27 16 28 C10.5 27 6 22.5 6 17 L6 8 Z"'
+    ' fill="url(#g)" opacity="0.9"/>'
+    '<path d="M16 8 L23 11 L23 17 C23 20.8 20 24 16 25 C12 24 9 20.8 9 17 L9 11 Z"'
+    ' fill="#0f1730" opacity="0.6"/>'
+    '<path d="M13.5 16.5 L15.5 18.5 L19 14.5" stroke="#3cc8ff"'
+    ' stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>'
+    '</svg>'
+)
+# base64-вариант для встраивания в HTML-шаблон (data URI — резерв)
+_FAVICON_DATA_URI = (
+    "data:image/svg+xml;base64,"
+    + base64.b64encode(_FAVICON_SVG.encode("utf-8")).decode()
+)
+
+
+def _build_target(base: str, path: str, query: str, preserve_path: bool, preserve_query: bool) -> str:
+    target = base.rstrip("/")
+    if preserve_path:
+        target = urljoin(target + "/", path.lstrip("/"))
+    if preserve_query:
+        target = merge_query(target, query)
+    return target
+
+
+def _build_start_destination(
+    request: Request,
+    default_target: str,
+    target_override: str | None = None,
+) -> str:
+    target = target_override or request.query_params.get("target") or default_target
+    passthrough = [(k, v) for k, v in request.query_params.multi_items() if k != "target"]
+    base = f"/buy/{target}"
+    if not passthrough:
+        return base
+    return f"{base}?{urlencode(passthrough)}"
+
+
+def _b64url_encode(value: str) -> str:
+    return base64.urlsafe_b64encode(value.encode("utf-8")).decode("ascii").rstrip("=")
+
+
+def _b64url_decode(value: str) -> str:
+    padding = "=" * ((4 - len(value) % 4) % 4)
+    return base64.urlsafe_b64decode((value + padding).encode("ascii")).decode("utf-8")
+
+
+def _obfuscate_return_value(raw_value: str, public_domain: str) -> str:
+    decoded = raw_value
+    for _ in range(2):
+        if "%" not in decoded:
+            break
+        decoded = unquote(decoded)
+
+    parts = urlsplit(decoded)
+    if parts.scheme not in ("http", "https") or parts.netloc != public_domain:
+        return raw_value
+
+    token = _b64url_encode(decoded)
+    return f"https://{public_domain}/_r/{token}"
+
+
+def _obfuscate_return_in_url(url: str, public_domain: str) -> str:
+    parts = urlsplit(url)
+    query_items = parse_qsl(parts.query, keep_blank_values=True)
+
+    changed = False
+    updated_items: list[tuple[str, str]] = []
+    for key, value in query_items:
+        if key == "return" and value:
+            updated_items.append((key, _obfuscate_return_value(value, public_domain)))
+            changed = True
+        else:
+            updated_items.append((key, value))
+
+    if not changed:
+        return url
+
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(updated_items), parts.fragment))
+
+
+def _obfuscate_return_in_text(text: str, public_domain: str) -> str:
+    marker = '"return":"'
+    cursor = 0
+    out = text
+    while True:
+        idx = out.find(marker, cursor)
+        if idx == -1:
+            break
+        value_start = idx + len(marker)
+        value_end = out.find('"', value_start)
+        if value_end == -1:
+            break
+
+        current = out[value_start:value_end]
+        replaced = _obfuscate_return_value(current, public_domain)
+        out = out[:value_start] + replaced + out[value_end:]
+        cursor = value_start + len(replaced)
+
+    return out
+
+
+def create_app(config_path: str = "config/gateway.yml") -> FastAPI:
+    cfg = load_config(config_path)
+    docs_enabled = cfg.raw.get("project", {}).get("docs_enabled", False)
+    app = FastAPI(
+        title="VPN Gateway",
+        docs_url="/docs" if docs_enabled else None,
+        redoc_url="/redoc" if docs_enabled else None,
+        openapi_url="/openapi.json" if docs_enabled else None,
+    )
+    mirror_manager = MirrorManager()
+    templates = Jinja2Templates(directory="app/templates")
+
+    @app.api_route("/health", methods=["GET", "HEAD"])
+    async def health():
+        return {"ok": True}
+
+    # ── /favicon.svg — инлайн SVG, корректный content-type ──────────────────
+    @app.api_route("/favicon.svg", methods=["GET", "HEAD"])
+    async def favicon_svg():
+        return Response(
+            content=_FAVICON_SVG.encode("utf-8"),
+            media_type="image/svg+xml",
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
+
+    # ── /favicon.ico — редирект на SVG ──────────────────────────────────────
+    # ВАЖНО: нельзя отдавать SVG с content-type image/svg+xml по /favicon.ico:
+    # nginx добавляет X-Content-Type-Options: nosniff → браузер отклоняет ответ.
+    # Редирект 301 → браузер запрашивает /favicon.svg с правильным URL → принимает.
+    @app.api_route("/favicon.ico", methods=["GET", "HEAD"])
+    async def favicon_ico():
+        return RedirectResponse(url="/favicon.svg", status_code=301)
+
+
+    # ── Статика: монтируем только если папка существует (не ломаем запуск если папка пустая/отсутствует) ──
+    _static_dir = "app/static"
+    if os.path.isdir(_static_dir):
+        app.mount("/static", StaticFiles(directory=_static_dir), name="static")
+
+    @app.api_route("/docs", methods=["GET", "HEAD"])
+    @app.api_route("/redoc", methods=["GET", "HEAD"])
+    @app.api_route("/openapi.json", methods=["GET", "HEAD"])
+    async def hidden_docs_routes():
+        return Response(status_code=404)
+
+    landing_cfg = cfg.raw.get("landing", {})
+    pages = landing_cfg.get("pages") or []
+    if not pages:
+        raise ValueError("В конфиге landing.pages должен быть задан минимум один маршрут лендинга")
+
+    default_target = cfg.raw.get("project", {}).get("default_target")
+    if not default_target:
+        raise ValueError(
+            "В конфиге quick_setup.default_offer должно быть задано значение по умолчанию для /start. "
+            "Пример: default_offer: wl-lte"
+        )
+
+    landing_mode = landing_cfg.get("mode", "template")
+
+    allowed_domains = {cfg.raw.get("project", {}).get("public_domain", ""), cfg.raw.get("quick_setup", {}).get("public_domain", "")}
+    for pg in pages:
+        for d in pg.get("domains", []):
+            if d.strip():
+                allowed_domains.add(d.strip())
+    allowed_domains = {d for d in allowed_domains if d}
+
+    from collections import defaultdict
+    pages_by_path = defaultdict(list)
+    for page in pages:
+        pages_by_path[page.get("path", "/")].append(page)
+
+    def make_render_page(plist: list):
+        if landing_mode == "mirror_redirect":
+            async def render_page(request: Request):
+                hostname = request.url.hostname or ""
+                matched_page = None
+                for pg in plist:
+                    domains = pg.get("domains") or []
+                    if hostname in domains:
+                        matched_page = pg
+                        break
+                if not matched_page:
+                    for pg in plist:
+                        if not pg.get("domains"):
+                            matched_page = pg
+                            break
+                if not matched_page:
+                    matched_page = plist[0]
+                target = matched_page.get("mirror_target") or matched_page.get("primary_target") or default_target
+                return RedirectResponse(
+                    url=_build_start_destination(request, default_target=default_target, target_override=target),
+                    status_code=302,
+                )
+        else:
+            async def render_page(request: Request):
+                hostname = request.url.hostname or ""
+                matched_page = None
+                for pg in plist:
+                    domains = pg.get("domains") or []
+                    if hostname in domains:
+                        matched_page = pg
+                        break
+                if not matched_page:
+                    for pg in plist:
+                        if not pg.get("domains"):
+                            matched_page = pg
+                            break
+                if not matched_page:
+                    matched_page = plist[0]
+                start_target = matched_page.get("primary_target", default_target)
+                start_link = f"/start?target={start_target}"
+                return templates.TemplateResponse(request, "landing.html", {"start_link": start_link, "page": matched_page})
+        return render_page
+
+    for page_path, page_list in pages_by_path.items():
+        app.add_api_route(page_path, make_render_page(page_list), methods=["GET", "HEAD"], response_class=HTMLResponse)
+
+    @app.api_route("/start", methods=["GET", "HEAD"])
+    async def start(request: Request):
+        return RedirectResponse(url=_build_start_destination(request, default_target=default_target), status_code=302)
+
+    @app.api_route("/_r/{token}", methods=["GET", "HEAD"])
+    async def return_unwrap(token: str):
+        fallback = cfg.raw["project"].get("fallback_url", "/")
+        try:
+            target = _b64url_decode(token)
+            parsed = urlsplit(target)
+            if parsed.scheme not in ("http", "https") or parsed.netloc not in allowed_domains:
+                return RedirectResponse(url=fallback, status_code=302)
+            return RedirectResponse(url=target, status_code=302)
+        except Exception:
+            return RedirectResponse(url=fallback, status_code=302)
+
+    @app.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"])
+    async def catch_all(request: Request, full_path: str):
+        path = "/" + full_path
+        route = match_route(path, [r.__dict__ for r in cfg.routing.routes])
+        pool = cfg.upstreams[route["upstream_pool"]]
+
+        if pool.strategy == "first_alive":
+            # TTL-кэш: обновляем health-check не чаще раза в 10 секунд
+            await mirror_manager.refresh_if_stale(pool.targets, timeout_ms=pool.healthcheck.get("timeout_ms", 1500))
+            selected = mirror_manager.pick_first_alive(pool.targets)
+        else:
+            selected = pool.targets[0] if pool.targets else None
+
+        if not selected:
+            fallback = cfg.raw["project"].get("fallback_url", "/")
+            return RedirectResponse(url=fallback, status_code=302)
+
+        target_url = _build_target(
+            base=selected,
+            path=path,
+            query=request.url.query,
+            preserve_path=cfg.routing.preserve_path,
+            preserve_query=cfg.routing.preserve_query,
+        )
+
+        if cfg.raw["project"].get("mode") == "redirect":
+            return RedirectResponse(url=target_url, status_code=302)
+
+        body = await request.body()
+        headers = dict(request.headers)
+        # Явно задаём Host для upstream — иначе некоторые backend'ы вернут 400
+        # или ответят default vhost'ом вместо нужного
+        headers["host"] = urlsplit(target_url).netloc
+        upstream_response = await forward_request(request.method, target_url, headers=headers, body=body)
+
+        response_headers_list = []
+        hop_by_hop = {"connection", "keep-alive", "transfer-encoding", "upgrade", "proxy-authenticate", "proxy-authorization", "te", "trailers"}
+        _origin_headers = {"x-powered-by", "x-backend-server", "x-aspnet-version", "x-aspnetmvc-version", "x-request-id", "cf-ray", "x-amz-request-id", "x-amzn-trace-id"}
+        
+        # Динамически определяем public_domain на основе текущего хоста запроса
+        public_domain = request.url.hostname or (cfg.raw.get("project", {}) or {}).get("public_domain", "")
+        origin_domain = (cfg.raw.get("quick_setup", {}) or {}).get("origin_domain", "")
+        hide_payment_return = cfg.raw.get("security", {}).get("hide_payment_return", False)
+        
+        req_origin = request.headers.get("origin")
+        
+        for k, v in upstream_response.headers.multi_items():
+            k_low = k.lower()
+            if k_low in hop_by_hop:
+                continue
+            if cfg.raw.get("security", {}).get("strip_server_header", True) and k_low == "server":
+                continue
+            if k_low in ("date", "content-length", "content-encoding"):
+                continue
+            if cfg.raw.get("security", {}).get("hide_origin_headers", True) and k_low in _origin_headers:
+                continue
+            
+            # Rewrite Location header
+            if k_low == "location" and public_domain and origin_domain:
+                v = v.replace(origin_domain, public_domain)
+                if hide_payment_return:
+                    v = _obfuscate_return_in_url(v, public_domain)
+            
+            # Rewrite Set-Cookie domain
+            if k_low == "set-cookie" and origin_domain and public_domain:
+                v = v.replace(f"domain={origin_domain}", f"domain={public_domain}")
+                v = v.replace(f"Domain={origin_domain}", f"Domain={public_domain}")
+
+            # Rewrite CORS Access-Control-Allow-Origin header
+            if k_low == "access-control-allow-origin":
+                if req_origin:
+                    try:
+                        origin_hostname = urlsplit(req_origin).hostname
+                        if origin_hostname in allowed_domains:
+                            v = req_origin
+                    except Exception:
+                        pass
+                elif origin_domain and public_domain:
+                    v = v.replace(origin_domain, public_domain)
+            
+            if k_low == "access-control-allow-credentials":
+                v = "true"
+
+            response_headers_list.append((k, v))
+
+        # Add CORS headers if not already present
+        cors_origin_present = any(k.lower() == "access-control-allow-origin" for k, _ in response_headers_list)
+        if not cors_origin_present and req_origin:
+            try:
+                origin_hostname = urlsplit(req_origin).hostname
+                if origin_hostname in allowed_domains:
+                    response_headers_list.append(("Access-Control-Allow-Origin", req_origin))
+                    response_headers_list.append(("Access-Control-Allow-Credentials", "true"))
+            except Exception:
+                pass
+
+        body_content = upstream_response.content
+        content_type = (upstream_response.headers.get("content-type") or "").lower()
+        textual_types = ("text/", "application/json", "application/javascript", "application/xml")
+        is_html = "text/html" in content_type
+
+        if any(t in content_type for t in textual_types):
+            if public_domain and origin_domain:
+                body_content = body_content.replace(origin_domain.encode("utf-8"), public_domain.encode("utf-8"))
+            if public_domain and hide_payment_return:
+                text_body = body_content.decode("utf-8", errors="ignore")
+                body_content = _obfuscate_return_in_text(text_body, public_domain).encode("utf-8")
+
+        # ── CSS-инъекция для Bedolaga-Cabinet ──────────────────────────────
+        # Проблема: React/Next.js рендерит описания тарифов как текстовый узел
+        # в <p>. Браузер по HTML-стандарту схлопывает \n в пробел.
+        # Решение: white-space:pre-line — уважает \n, схлопывает пробелы.
+        # Инжектируется один раз в <head> → работает на всех вкладках через
+        # React client-side navigation (SPA не перезагружает <head>).
+        if is_html and b"</head>" in body_content:
+            _CABINET_CSS = (
+                b"<style>"
+                # Описания тарифов в Bedolaga-Cabinet (Tailwind-классы)
+                b"p.text-xs{white-space:pre-line}"
+                b".text-xs.text-dark-400{white-space:pre-line}"
+                b".text-dark-400.text-xs{white-space:pre-line}"
+                # Описания в других секциях (подзаголовки, пояснения)
+                b"p.text-sm.text-dark-400{white-space:pre-line}"
+                b"</style>"
+            )
+            body_content = body_content.replace(b"</head>", _CABINET_CSS + b"</head>", 1)
+
+        response = Response(
+            content=body_content,
+            status_code=upstream_response.status_code,
+        )
+        response.raw_headers = [
+            (k.encode("latin-1"), v.encode("latin-1"))
+            for k, v in response_headers_list
+        ]
+        return response
+
+
+    return app
+
+
+app = create_app()

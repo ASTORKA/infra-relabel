@@ -1,0 +1,136 @@
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+    return 444;
+}
+
+server {
+    listen 443 ssl default_server;
+    listen [::]:443 ssl default_server;
+    server_name _;
+
+    ssl_certificate     /etc/nginx/certs/fullchain.pem;
+    ssl_certificate_key /etc/nginx/certs/privkey.pem;
+
+    return 444;
+}
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${EDGE_DOMAIN} ${EDGE_ADDITIONAL_DOMAINS};
+
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/acme-challenge;
+        try_files $uri =404;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name ${EDGE_DOMAIN} ${EDGE_ADDITIONAL_DOMAINS};
+
+    ssl_certificate     /etc/nginx/certs/fullchain.pem;
+    ssl_certificate_key /etc/nginx/certs/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:SSL:20m;
+    ssl_session_timeout 10m;
+
+    # Дополнительные заголовки безопасности
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+    # Rate-limit и ограничение соединений
+    limit_req zone=per_ip_rate burst=50 nodelay;
+    limit_conn per_ip_conn 50;
+
+    # Жесткий deny для типовых сканер-путей
+    location ~* ^/(\.env|\.git|wp-admin|wp-login\.php|xmlrpc\.php|phpmyadmin|adminer|boaform|manager/html) {
+        return 444;
+    }
+
+    # Блокировка подозрительных user-agent
+    if ($is_bad_ua) {
+        return 444;
+    }
+
+    # Ограничение HTTP-методов
+    if ($request_method !~ ^(GET|HEAD|POST|OPTIONS)$) {
+        return 405;
+    }
+
+    # Усиленный лимит для чувствительных endpoint
+    location ~* ^/(start|api/) {
+        limit_req zone=per_ip_sensitive burst=15 nodelay;
+        proxy_pass http://vpn-gateway:8080;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+
+        # WebSocket поддержка
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        proxy_connect_timeout 5s;
+        proxy_send_timeout 30s;
+        proxy_read_timeout 30s;
+
+        # Нормализация всех редиректов от upstream — обрыв петли редиректов
+        # Кабинет может ответить 301 https://origin/... — превращаем в относительный путь
+        proxy_redirect ~^https?://[^/]+(/.*)$ $1;
+
+        proxy_hide_header Server;
+        proxy_hide_header X-Powered-By;
+        proxy_hide_header X-AspNet-Version;
+        proxy_hide_header X-AspNetMvc-Version;
+    }
+
+    location / {
+        proxy_pass http://vpn-gateway:8080;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+
+        # Отключаем сжатие от upstream — иначе sub_filter не сможет обработать HTML
+        proxy_set_header Accept-Encoding "";
+
+        proxy_connect_timeout 5s;
+        proxy_send_timeout 30s;
+        proxy_read_timeout 30s;
+
+        # Нормализация всех редиректов от upstream — обрыв петли редиректов
+        # Кабинет может ответить 301 https://origin/... — превращаем в относительный путь
+        proxy_redirect ~^https?://[^/]+(/.*)$ $1;
+
+        # Сокрытие технических заголовков upstream
+        proxy_hide_header Server;
+        proxy_hide_header X-Powered-By;
+        proxy_hide_header X-AspNet-Version;
+        proxy_hide_header X-AspNetMvc-Version;
+
+        # ── Инжектируем НАШ фавикон во все HTML-страницы ────────────────────
+        # Работает для landing.html И для страниц кабинета в reverse_proxy режиме.
+        # sub_filter_types * — фильтруем все MIME-типы чтобы:
+        #   a) не дублировался text/html из mime.types (было nginx warn)
+        #   b) работало с 'text/html; charset=utf-8' и другими вариантами
+        sub_filter_types *;
+        sub_filter '<head>' '<head><link rel="icon" type="image/svg+xml" href="/favicon.svg"><link rel="shortcut icon" href="/favicon.ico">';
+        sub_filter_once on;
+    }
+
+}

@@ -1,0 +1,9 @@
+services:
+  vpn-gateway:
+    build: .
+    container_name: vpn-gateway
+    restart: unless-stopped
+    expose:
+      - "8080"
+    volumes:
+      - ./config:/app/config:ro

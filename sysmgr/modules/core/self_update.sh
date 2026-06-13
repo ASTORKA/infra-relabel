@@ -1,0 +1,194 @@
+#!/bin/bash
+# ============================================================ #
+# ==       МОДУЛЬ УСТАНОВКИ, ОБНОВЛЕНИЯ И УДАЛЕНИЯ          == #
+# ============================================================ #
+#
+# Управляет жизненным циклом самого "Решалы".
+#
+[[ "${BASH_SOURCE[0]}" == "${0}" ]] && exit 1 # Защита от прямого запуска
+
+_perform_install_or_update() {
+    local mode=${1:-install} # 'install' or 'update'
+
+    # Сетевое обновление отключено (вендоренная замороженная копия).
+    printf_error "Самообновление отключено: код вендорен, обновляй пересняв вручную."
+    return 1
+
+    local REPO_ARCHIVE_URL="${REPO_URL}/archive/refs/heads/${REPO_BRANCH}.tar.gz"
+    local TEMP_ARCHIVE; TEMP_ARCHIVE=$(mktemp /tmp/sysmgr_archive.XXXXXX.tar.gz)
+    
+    printf_info "Качаю последнюю версию с GitHub..."
+    if ! curl -sL --fail -o "$TEMP_ARCHIVE" "$REPO_ARCHIVE_URL"; then
+        printf_error "Не могу скачать архив. Проверь интернет или настройки в config/sysmgr.conf"
+        rm -f "$TEMP_ARCHIVE"; return 1
+    fi
+
+    local TEMP_DIR; TEMP_DIR=$(mktemp -d /tmp/sysmgr_extracted.XXXXXX)
+    if ! tar -xzf "$TEMP_ARCHIVE" -C "$TEMP_DIR" --strip-components=1; then
+        printf_error "Не могу распаковать архив. Файл повреждён?"; rm -f "$TEMP_ARCHIVE"; rm -rf "$TEMP_DIR"; return 1
+    fi
+
+    local INSTALL_DIR="/opt/sysmgr"
+    printf_info "Разворачиваю файлы в ${INSTALL_DIR}..."
+    run_cmd rm -rf "$INSTALL_DIR"
+    run_cmd mkdir -p "$INSTALL_DIR"
+    run_cmd cp -r "${TEMP_DIR}/." "$INSTALL_DIR/"
+    run_cmd chmod +x "${INSTALL_DIR}/sysmgr.sh"
+
+    run_cmd ln -sf "${INSTALL_DIR}/sysmgr.sh" "$INSTALL_PATH"
+    
+    rm -f "$TEMP_ARCHIVE"; rm -rf "$TEMP_DIR"
+    return 0
+}
+
+# ... (начало self_update.sh) ...
+
+install_script() {
+    info "Запуск процедуры установки Решалы (локальная копия из SCRIPT_DIR)..."
+    
+    # SCRIPT_DIR в данный момент указывает на временную папку,
+    # куда bootstrapper уже всё распаковал. Нам больше не нужно ничего качать.
+    # Мы просто копируем файлы из текущего места в финальное.
+    
+    local INSTALL_DIR="/opt/sysmgr"
+    
+    info "Копирую файлы из временной директории в ${INSTALL_DIR}..."
+    run_cmd rm -rf "$INSTALL_DIR" # Чистим старую установку на всякий случай
+    run_cmd mkdir -p "$INSTALL_DIR"
+    # Вот ключевое изменение! Копируем из SCRIPT_DIR, а не качаем заново.
+    run_cmd cp -r "${SCRIPT_DIR}/." "${INSTALL_DIR}/"
+    
+    info "Создаю системную команду 'sysmgr' (через symlink на /opt/sysmgr/sysmgr.sh)..."
+    run_cmd ln -sf "${INSTALL_DIR}/sysmgr.sh" "$INSTALL_PATH"
+    run_cmd chmod +x "${INSTALL_DIR}/sysmgr.sh"
+    
+    # Добавляем алиас для root, если он нужен
+    if ! grep -q "alias sysmgr='sudo sysmgr'" /root/.bashrc 2>/dev/null; then
+        echo "alias sysmgr='sudo sysmgr'" | run_cmd tee -a /root/.bashrc >/dev/null
+    fi
+
+    log "Скрипт успешно установлен."
+    ok "Решала установлена в системе."
+    printf "   %b: %b\n" "${C_BOLD}Команда запуска" "${C_YELLOW}sysmgr${C_RESET}"
+
+    # --- Умный враппер: работает с sudo и без него ---
+    local wrapper_script="/usr/local/bin/sysmgr"
+    # Удаляем старый симлинк, создаём умный wrapper-скрипт
+    rm -f "${wrapper_script}"
+    cat > "${wrapper_script}" << 'WRAPPER_EOF'
+#!/bin/bash
+# Умный лаунчер Решалы: пробует sudo, если нет — запускает напрямую
+TARGET="/opt/sysmgr/sysmgr.sh"
+if [[ $EUID -eq 0 ]]; then
+    exec "$TARGET" "$@"
+elif command -v sudo >/dev/null 2>&1; then
+    exec sudo "$TARGET" "$@"
+else
+    echo "[!] sudo не найден, пробую запустить напрямую..." >&2
+    exec "$TARGET" "$@"
+fi
+WRAPPER_EOF
+    chmod +x "${wrapper_script}"
+
+    # Убираем устаревший алиас sudo sysmgr из .bashrc (если есть)
+    if [ -f /root/.bashrc ]; then
+        sed -i "/alias sysmgr=/d" /root/.bashrc 2>/dev/null || true
+    fi
+
+    warn "ВАЖНО: переподключись к серверу, чтобы команда заработала в новой сессии."
+
+    # Автозапуск Решалы сразу после установки
+    if [[ "${SYSMGR_NO_AUTOSTART:-0}" != "1" ]]; then
+        echo ""
+        info "Стартую Решалу прямо сейчас..."
+        sleep 1
+        exec "$wrapper_script"
+    fi
+}
+
+uninstall_script() {
+    warn "Точно хочешь выгнать Решалу НАХУЙ? УДАЛЮТСЯ ВСЕ ЕЁ ФАЙЛЫ!"
+    if ! ask_yes_no "(y/n): " "n"; then info "Отмена удаления. Решала остаётся."; return; fi
+    info "Начинаю самоликвидацию (удаляю бинарь, каталог /opt/sysmgr, лог и базу флота)..."
+    run_cmd rm -f "$INSTALL_PATH"
+    run_cmd rm -rf "/opt/sysmgr"
+    # Сносим лог и базу флота, если есть
+    if [ -n "${LOGFILE:-}" ]; then run_cmd rm -f "$LOGFILE" 2>/dev/null || true; fi
+    if [ -n "${FLEET_DATABASE_FILE:-}" ]; then run_cmd rm -f "$FLEET_DATABASE_FILE" 2>/dev/null || true; fi
+    if [ -f "/root/.bashrc" ]; then run_cmd sed -i "/alias sysmgr='sudo sysmgr'/d" /root/.bashrc; fi
+    ok "Самоликвидация завершена. Переподключись к серверу, чтобы очистить alias/окружение."
+    exit 0
+}
+
+# Нормализация версии: убираем префикс v/V
+_self_update_normalize_version() {
+    echo "$1" | sed 's/^[vV]//' 2>/dev/null
+}
+
+# Возвращает 0 (успех), если remote > local в терминах sort -V
+_self_update_is_remote_newer() {
+    local local_v remote_v
+    local_v=$(_self_update_normalize_version "$1")
+    remote_v=$(_self_update_normalize_version "$2")
+
+    # Если одинаковые после нормализации — обновления нет
+    if [[ "$local_v" == "$remote_v" ]]; then
+        return 1
+    fi
+
+    # sort -V отсортирует версии по возрастанию; берём последнюю
+    local top
+    top=$(printf '%s\n%s\n' "$local_v" "$remote_v" | sort -V | tail -n1)
+    if [[ "$top" == "$remote_v" ]]; then
+        return 0
+    fi
+    return 1
+}
+
+check_for_updates() {
+    # Самообновление отключено (вендоренная копия) — не ходим в сеть.
+    UPDATE_AVAILABLE=0; LATEST_VERSION=""; LATEST_COMMIT_MESSAGE=""
+    return 0
+    local remote_version_url="https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/${REPO_BRANCH}/sysmgr.sh?cb=$(date +%s)"
+    local remote_ver
+    remote_ver=$(curl -s -L --connect-timeout 8 --max-time 12 "$remote_version_url" 2>/dev/null \
+        | grep 'readonly VERSION=' | head -1 | cut -d'"' -f2)
+
+    if [[ -z "$remote_ver" ]]; then
+        debug_log "check_for_updates: не удалось получить версию с GitHub (branch=${REPO_BRANCH})"
+        UPDATE_AVAILABLE=0; LATEST_VERSION=""
+        return
+    fi
+
+    debug_log "check_for_updates: local=${VERSION} remote=${remote_ver}"
+
+    if _self_update_is_remote_newer "$VERSION" "$remote_ver"; then
+        UPDATE_AVAILABLE=1; LATEST_VERSION="$remote_ver"
+        log "[ОБНОВЛЕНИЕ] Доступно: ${VERSION} -> ${remote_ver}"
+        
+        # Получаем текст последнего коммита (что нового)
+        local commit_api_url="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/commits/${REPO_BRANCH}"
+        local commit_msg
+        commit_msg=$(curl -s -L --connect-timeout 8 --max-time 12 "$commit_api_url" 2>/dev/null \
+            | jq -r 'if type=="array" then .[0].commit.message else .commit.message end' 2>/dev/null)
+        
+        if [[ -n "$commit_msg" && "$commit_msg" != "null" ]]; then
+            LATEST_COMMIT_MESSAGE="$commit_msg"
+        else
+            LATEST_COMMIT_MESSAGE=""
+        fi
+    else
+        UPDATE_AVAILABLE=0; LATEST_VERSION=""; LATEST_COMMIT_MESSAGE=""
+    fi
+}
+
+run_update() {
+    if _perform_install_or_update "update"; then
+        log "Скрипт успешно обновлён до версии ${LATEST_VERSION}."
+        ok "Обновление завершено. Теперь у тебя версия ${LATEST_VERSION}."
+        info "Перезапускаю Решалу, чтобы все модули подхватили новую версию..."
+        sleep 2
+        cd / || true
+        exec "$INSTALL_PATH"
+    fi
+}
