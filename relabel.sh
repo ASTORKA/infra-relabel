@@ -158,6 +158,23 @@ insert_container_name() {
   rm -f "$tmp"
 }
 
+# Гарантировать РОВНО ОДНУ строку container_name со значением $to.
+# Чинит и дубликаты (оставляет первую, остальные удаляет) — идемпотентно.
+# Расчёт на single-service node-compose (по одному сервису на файл).
+ensure_container_name() {
+  local file="$1" to="$2" tmp
+  tmp="$(mktemp)"
+  awk -v to="$to" '
+    /^[[:space:]]*container_name:/ {
+      if (!seen) { match($0, /^[[:space:]]*/); print substr($0,1,RLENGTH) "container_name: " to; seen=1 }
+      next
+    }
+    { print }
+  ' "$file" >"$tmp"
+  cat "$tmp" >"$file"
+  rm -f "$tmp"
+}
+
 # Метка compose у контейнера. $1=container $2=label
 docker_label() {
   docker inspect -f "{{ index .Config.Labels \"$2\" }}" "$1" 2>/dev/null || true
@@ -266,8 +283,9 @@ cmd_apply() {
       local bname; bname="$(echo "$file" | sed 's#/#_#g')"
       [ -f "$BACKUP_DIR/$bname" ] || cp "$file" "$BACKUP_DIR/$bname"
 
-      if grep -Eq "container_name:[[:space:]]*[\"']?${orig}[\"']?" "$file"; then
-        replace_container_name "$file" "$orig" "$decoy"
+      if grep -Eq "^[[:space:]]*container_name:" "$file"; then
+        # есть container_name (любое значение, возможны дубликаты) → нормализуем к decoy
+        ensure_container_name "$file" "$decoy"
       else
         svc="$(docker_label "$cur" com.docker.compose.service)"
         if [ -n "$svc" ]; then
