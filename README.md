@@ -95,18 +95,40 @@ cd /opt/infra-relabel && ./install.sh && relabel all-with-accelerator
 
 > `optimize` ставит XanMod-ядро — после него нужен `reboot` (BBRv3 заработает).
 
-### Поставить всё, но БЕЗ переименований (`--no-mask`)
+## Всё с нуля одной командой, но БЕЗ переименований (`--no-mask`)
 
 Если маскировка не нужна (или ломает текущую конфигурацию) — флаг `--no-mask`
-ставит selfsteal + optimize + protect + mobile443 + sysmgr, **ничего не
-переименовывая**:
+ставит **всё то же самое, но НИЧЕГО не переименовывает**: selfsteal → `optimize`
+→ `protect` → `mobile443` → `diagnose` → `sysmgr`, **без** шага маскировки
+(контейнеры/образы/проекты/ядро остаются с исходными именами `remnanode`/`xray`).
+
+Скопировать репо, поставить команду и применить всё одним вызовом. **От root.**
+Подставь СВОИ порты и IP панели:
 
 ```bash
-SSH_PORT=22 TCP_PORTS="443 8443" UDP_PORTS="443 8443" WHITELIST="IP_ПАНЕЛИ" \
-  NONINTERACTIVE=1 relabel all-with-accelerator --no-mask
+git clone https://github.com/ASTORKA/infra-relabel /opt/infra-relabel \
+  && cd /opt/infra-relabel && ./install.sh \
+  && SSH_PORT=22 TCP_PORTS="443 8443" UDP_PORTS="443 8443" WHITELIST="IP_ПАНЕЛИ" \
+     NONINTERACTIVE=1 ./relabel.sh all-with-accelerator --no-mask
 ```
 
-То же с предпросмотром: `relabel all-with-accelerator --dry-run --no-mask`.
+**Сначала прогон вхолостую** (ничего не меняет, покажет все команды):
+
+```bash
+git clone https://github.com/ASTORKA/infra-relabel /opt/infra-relabel \
+  && cd /opt/infra-relabel && ./relabel.sh all-with-accelerator --dry-run --no-mask
+```
+
+**Безопасный вариант — без `NONINTERACTIVE`** (`protect` сам спросит порты):
+
+```bash
+cd /opt/infra-relabel && ./install.sh && relabel all-with-accelerator --no-mask
+```
+
+> ⚠️ Те же предупреждения по портам, что и выше: `TCP_PORTS`/`UDP_PORTS` должны
+> включать ВСЕ порты ноды (`ss -tulnp`), `WHITELIST` — IP панели, `SSH_PORT` —
+> твой SSH. selfsteal спросит домен интерактивно. `optimize` ставит XanMod —
+> нужен `reboot`.
 
 ## Быстрый старт — только маскировка
 
