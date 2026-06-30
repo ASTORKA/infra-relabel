@@ -38,6 +38,7 @@ HOSTPATH_STATE_FILE="$STATE_DIR/hostpaths.map" # строки: cur|oldhost|newho
 BACKUP_DIR="$STATE_DIR/backups"
 
 DRY_RUN=0   # 1 — только показывать команды, ничего не выполнять
+NO_MASK=0   # 1 — ставить сервисы, но НЕ переименовывать (для all-with-accelerator)
 
 mkdir -p "$STATE_DIR" "$BACKUP_DIR"
 
@@ -809,7 +810,11 @@ cmd_all_with_accel() {
     c_yel "ВНИМАНИЕ: selfsteal/optimize/protect требуют root — запусти через sudo, иначе они пропустятся."
   fi
   echo; c_grn "════ selfsteal (маскирующий сайт) ════"; cmd_selfsteal
-  cmd_all
+  if [ "$NO_MASK" = 1 ]; then
+    echo; c_yel "════ маскировка ПРОПУЩЕНА (--no-mask): ничего не переименовываю ════"
+  else
+    cmd_all
+  fi
   local acc="$SCRIPT_DIR/accelerator/install.sh"
   if [ ! -f "$acc" ]; then
     c_yel "accelerator не найден ($acc) — ускорение/защита пропущены"
@@ -825,7 +830,11 @@ cmd_all_with_accel() {
   echo; c_grn "════ управляющий фреймворк (sysmgr) ════"; cmd_sysmgr
   echo
   if [ "$DRY_RUN" = 1 ]; then c_yel "DRY-RUN завершён — на сервере ничего не изменилось."; else
-    c_grn "Готово: selfsteal + маскировка + ускорение + защита + mobile443 + sysmgr."
+    if [ "$NO_MASK" = 1 ]; then
+      c_grn "Готово (БЕЗ маскировки): selfsteal + ускорение + защита + mobile443 + sysmgr."
+    else
+      c_grn "Готово: selfsteal + маскировка + ускорение + защита + mobile443 + sysmgr."
+    fi
     c_yel "Если optimize ставил XanMod — нужен reboot (uname -r должен содержать xanmod)."
     c_dim "Управление: команда 'sysmgr' (TUI)."
   fi
@@ -894,7 +903,8 @@ relabel.sh — маскировка имён docker-контейнеров VPN-�
 
 ОДНОЙ КОМАНДОЙ:
   relabel all [--dry-run]      применить ВСЁ маскирование (A→B→C→D)
-  relabel all-with-accelerator [--dry-run]  selfsteal+маскирование+optimize+protect+mobile443+sysmgr (root!)
+  relabel all-with-accelerator [--dry-run] [--no-mask]  selfsteal+маскирование+optimize+protect+mobile443+sysmgr (root!)
+                               (--no-mask: поставить ВСЁ, но НИЧЕГО не переименовывать)
   relabel restore-all [--dry-run]  откатить ВСЁ маскирование
   relabel uninstall [--dry-run]    ПОЛНОЕ удаление: откат всего + снять сервисы и команду
 
@@ -923,7 +933,12 @@ EOF
 # --- точка входа ------------------------------------------------------------
 
 need_docker
-[ "${2:-}" = "--dry-run" ] && DRY_RUN=1
+for _a in "$@"; do
+  case "$_a" in
+    --dry-run) DRY_RUN=1 ;;
+    --no-mask) NO_MASK=1 ;;
+  esac
+done
 case "${1:-}" in
   status)            cmd_status ;;
   all)               cmd_all ;;

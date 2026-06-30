@@ -95,6 +95,19 @@ cd /opt/infra-relabel && ./install.sh && relabel all-with-accelerator
 
 > `optimize` ставит XanMod-ядро — после него нужен `reboot` (BBRv3 заработает).
 
+### Поставить всё, но БЕЗ переименований (`--no-mask`)
+
+Если маскировка не нужна (или ломает текущую конфигурацию) — флаг `--no-mask`
+ставит selfsteal + optimize + protect + mobile443 + sysmgr, **ничего не
+переименовывая**:
+
+```bash
+SSH_PORT=22 TCP_PORTS="443 8443" UDP_PORTS="443 8443" WHITELIST="IP_ПАНЕЛИ" \
+  NONINTERACTIVE=1 relabel all-with-accelerator --no-mask
+```
+
+То же с предпросмотром: `relabel all-with-accelerator --dry-run --no-mask`.
+
 ## Быстрый старт — только маскировка
 
 ```bash
