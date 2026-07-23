@@ -130,6 +130,44 @@ cd /opt/infra-relabel && ./install.sh && relabel all-with-accelerator --no-mask
 > твой SSH. selfsteal спросит домен интерактивно. `optimize` ставит XanMod —
 > нужен `reboot`.
 
+## Только ускорение/защита — БЕЗ переименований и БЕЗ заглушки (`--no-mask --no-selfsteal`)
+
+Если заглушка selfsteal у тебя **уже стоит** (или не нужна) и переименования тоже
+не нужны — комбинируй флаги. Ставится только: `optimize` → `protect` →
+`mobile443` → `diagnose` → `sysmgr`. **Ничего не переименовывается и заглушка не
+трогается.**
+
+Одной командой с нуля (**от root**, подставь свои порты и IP):
+
+```bash
+git clone https://github.com/ASTORKA/infra-relabel /opt/infra-relabel \
+  && cd /opt/infra-relabel && ./install.sh \
+  && SSH_PORT=22 TCP_PORTS="443" UDP_PORTS="443" WHITELIST="IP_ПАНЕЛИ,IP_КАСКАД-НОДЫ" \
+     NONINTERACTIVE=1 ./relabel.sh all-with-accelerator --no-mask --no-selfsteal
+```
+
+Предпросмотр (ничего не меняет):
+
+```bash
+git clone https://github.com/ASTORKA/infra-relabel /opt/infra-relabel \
+  && cd /opt/infra-relabel \
+  && ./relabel.sh all-with-accelerator --dry-run --no-mask --no-selfsteal
+```
+
+Безопасный вариант — без `NONINTERACTIVE` (`protect` сам спросит порты):
+
+```bash
+cd /opt/infra-relabel && ./install.sh \
+  && relabel all-with-accelerator --no-mask --no-selfsteal
+```
+
+Флаги можно применять и по отдельности:
+`--no-mask` (не переименовывать) или `--no-selfsteal` (не ставить заглушку).
+
+> ⚠️ Порты — строго те, где слушает нода (`ss -tulnp`); loopback-порт заглушки
+> (напр. 9443) в фаервол НЕ добавляй. В `WHITELIST` — IP панели и IP каскад-ноды
+> (иначе per-IP лимиты порежут трафик, идущий с одного IP на 200 юзеров).
+
 ## Быстрый старт — только маскировка
 
 ```bash
@@ -190,7 +228,7 @@ relabel uninstall               # снести всё, что ставил ре�
 | `relabel mobile443` | block-only фильтр портов (дроп blocklist'ов, root) |
 | `relabel ps` | показать процессы внутри контейнеров |
 | `relabel all` | вся маскировка сразу (A→B→C→D) |
-| `relabel all-with-accelerator` | маскировка + `optimize` + `protect` + `mobile443` + `sysmgr` (root) |
+| `relabel all-with-accelerator` | selfsteal + маскировка + `optimize` + `protect` + `mobile443` + `sysmgr` (root). Флаги: `--no-mask` (без переименований), `--no-selfsteal` (без заглушки) |
 | `relabel uninstall` | ПОЛНОЕ удаление: снять все сервисы + откат маскировки + команду (root) |
 
 Откат по шагам: `restore`, `images-restore`, `project-restore`,
