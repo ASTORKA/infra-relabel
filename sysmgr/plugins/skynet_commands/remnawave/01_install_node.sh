@@ -164,9 +164,9 @@ trap 'rm -rf "$WORKDIR"' EXIT
 cd "$WORKDIR"
 
 TEMPLATES=(
-  "https://github.com/eGamesAPI/simple-web-templates/archive/refs/heads/main.zip"
-  "https://github.com/distillium/sni-templates/archive/refs/heads/main.zip"
-  "https://github.com/prettyleaf/nothing-sni/archive/refs/heads/main.zip"
+  "${GH_PROXY:-https://gh-proxy.com/}https://github.com/eGamesAPI/simple-web-templates/archive/refs/heads/main.zip"
+  "${GH_PROXY:-https://gh-proxy.com/}https://github.com/distillium/sni-templates/archive/refs/heads/main.zip"
+  "${GH_PROXY:-https://gh-proxy.com/}https://github.com/prettyleaf/nothing-sni/archive/refs/heads/main.zip"
 )
 
 SOURCE=${REMASK_SOURCE:-}

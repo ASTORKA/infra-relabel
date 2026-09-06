@@ -49,6 +49,41 @@ cd /opt/infra-relabel
 После этого `relabel` доступна из любого каталога. Карта имён (`names.conf`) и
 состояние (`.state/`) остаются в каталоге репозитория.
 
+> ⚠️ Если сам `git clone` виснет на «Cloning into…» — это DPI-блокировка
+> github.com на сервере. Тяни репо архивом через прокси (git-протокол не
+> участвует):
+>
+> ```bash
+> rm -rf /opt/infra-relabel && mkdir -p /opt/infra-relabel
+> curl -fL --ipv4 https://gh-proxy.com/https://codeload.github.com/ASTORKA/infra-relabel/tar.gz/refs/heads/main \
+>   | tar -xz --strip-components=1 -C /opt/infra-relabel
+> ```
+
+### Обход DPI-блокировок GitHub (`GH_PROXY`)
+
+На заблокированных сетях (типичный VPS в РФ) скрипты, которые в рантайме тянут
+код/данные с GitHub (selfsteal, шаблоны сайтов, blocklist'ы, geoip, RealiTLScanner
+и т.д.), упрутся в DPI. Поэтому **все обращения к GitHub идут через прокси-префикс**
+`GH_PROXY` (по умолчанию `https://gh-proxy.com/`). Это касается и `raw`, и `api`,
+и `git clone`, и релизов; для внешнего `selfsteal.sh` его внутренние github-ссылки
+переписываются на прокси на лету перед запуском.
+
+```bash
+# по умолчанию — через gh-proxy.com, ничего делать не надо
+relabel all-with-accelerator --no-block
+
+# сменить зеркало (если gh-proxy.com недоступен):
+GH_PROXY="https://ghfast.top/" relabel all-with-accelerator --no-block
+
+# отключить прокси (сеть без блокировок — ходить на github напрямую):
+GH_PROXY= relabel all-with-accelerator --no-block
+```
+
+`GH_PROXY` экспортируется в дочерние скрипты (`accelerator`, `mobile443`) и
+вшивается в генерируемые юниты (например, ежедневный рефреш blocklist'ов
+`mobile443`), так что прокси работает и после установки. Формат префикса —
+`<proxy>/` + полный исходный URL (с `https://`).
+
 ## Всё с нуля одной командой (clone + маскировка + ускорение + защита)
 
 Скопировать репо, поставить команду и применить **всё** (переименования +

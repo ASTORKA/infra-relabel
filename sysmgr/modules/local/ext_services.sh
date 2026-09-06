@@ -107,13 +107,13 @@ _ext_seed_defaults() {
         "curl -sL yabs.sh | bash -s -- -4"
 
     _ext_save_entry "🗺️  IP Region — регион по IP (v1)" \
-        "bash <(wget -qO - https://github.com/vernette/ipregion/raw/master/ipregion.sh)"
+        "bash <(wget -qO - ${GH_PROXY:-https://gh-proxy.com/}https://github.com/vernette/ipregion/raw/master/ipregion.sh)"
 
     _ext_save_entry "🗺️  IP Region — регион по IP (v2 улучшенный)" \
         "bash <(wget -qO- https://ipregion.xyz)"
 
     _ext_save_entry "🔒 CensorCheck — проверка блокировки по DPI (RU)" \
-        "bash <(wget -qO- https://github.com/vernette/censorcheck/raw/master/censorcheck.sh) --mode dpi"
+        "bash <(wget -qO- ${GH_PROXY:-https://gh-proxy.com/}https://github.com/vernette/censorcheck/raw/master/censorcheck.sh) --mode dpi"
 
     _ext_save_entry "🖥️  SysBench — нагрузочный тест CPU (1 поток)" \
         "sysbench cpu run --threads=1"

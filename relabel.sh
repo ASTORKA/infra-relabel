@@ -42,6 +42,21 @@ NO_MASK=0   # 1 — ставить сервисы, но НЕ переимено�
 NO_SELFSTEAL=0  # 1 — не ставить selfsteal-заглушку (для all-with-accelerator)
 NO_BLOCK=0  # 1 — НЕ ставить блокировщики трафика: protect (firewall) и mobile443
 
+# Прокси-префикс для обхода DPI-блокировок GitHub (raw/api/codeload/git clone).
+# По умолчанию https://gh-proxy.com/ ; переопределяется через ENV; пусто = напрямую.
+# Экспортируем, чтобы дочерние скрипты (accelerator, mobile443) унаследовали значение.
+GH_PROXY="${GH_PROXY:-https://gh-proxy.com/}"
+export GH_PROXY
+
+# Завернуть один github-URL через прокси (пусто GH_PROXY → URL без изменений).
+gh_url() { printf '%s%s' "$GH_PROXY" "$1"; }
+
+# Переписать github-URL'ы внутри файла на прокси (для скачанных чужих скриптов).
+gh_rewrite_file() {
+  [ -n "$GH_PROXY" ] || return 0
+  sed -i -E "s#https://(raw\.githubusercontent\.com|github\.com|api\.github\.com|codeload\.github\.com|objects\.githubusercontent\.com)#${GH_PROXY}https://\1#g" "$1"
+}
+
 mkdir -p "$STATE_DIR" "$BACKUP_DIR"
 
 # --- утилиты ---------------------------------------------------------------
@@ -744,7 +759,7 @@ cmd_all() {
 # Установка selfsteal-сайта (маскирующий лендинг Caddy) из форка ASTORKA.
 # Идемпотентно: если контейнер уже есть (caddy-selfsteal или web-frontend) — пропуск.
 # Интерактивно (installer спросит домен и т.п.) — нужен TTY.
-SELFSTEAL_URL="https://github.com/ASTORKA/remnawave-scripts/raw/main/selfsteal.sh"
+SELFSTEAL_URL="$(gh_url "https://github.com/ASTORKA/remnawave-scripts/raw/main/selfsteal.sh")"
 cmd_selfsteal() {
   load_conf
   if docker container inspect web-frontend >/dev/null 2>&1 \
@@ -759,7 +774,15 @@ cmd_selfsteal() {
   fi
   command -v curl >/dev/null 2>&1 || { c_yel "· нет curl — пропускаю selfsteal"; return 0; }
   c_grn "· установка selfsteal (ответь на вопросы инсталлятора: домен и т.д.)…"
-  bash <(curl -Ls "$SELFSTEAL_URL") @ install
+  # Скачиваем в файл и переписываем ВНУТРЕННИЕ github-URL'ы скрипта на прокси
+  # (selfsteal.sh сам тянет шаблоны/acme.sh/api с github — иначе упрётся в DPI).
+  local _sf; _sf="$(mktemp)"
+  if ! curl -Ls "$SELFSTEAL_URL" -o "$_sf" || [ ! -s "$_sf" ]; then
+    c_yel "· не удалось скачать selfsteal ($SELFSTEAL_URL) — пропуск"; rm -f "$_sf"; return 0
+  fi
+  gh_rewrite_file "$_sf"
+  bash "$_sf" @ install
+  rm -f "$_sf"
 }
 
 # Установка вендоренного управляющего фреймворка (sysmgr) → /opt/sysmgr + команда sysmgr.

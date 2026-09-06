@@ -23,7 +23,9 @@ SCRIPTS="$SCRIPT_DIR/scripts"
 SG_REF="${SG_REF:-main}"
 # SG_REF уходит в URL модулей — запрещаем path-traversal/инъекцию (увод на чужой репо).
 [[ "$SG_REF" =~ ^[A-Za-z0-9._/-]+$ && "$SG_REF" != *..* ]] || { echo "[x] SG_REF '$SG_REF' невалиден"; exit 1; }
-REPO_URL="${SG_REPO_URL:-https://raw.githubusercontent.com/ASTORKA/infra-relabel/$SG_REF/accelerator}"
+# GH_PROXY — прокси-префикс против DPI-блокировок GitHub (наследуется от relabel.sh).
+GH_PROXY="${GH_PROXY:-https://gh-proxy.com/}"
+REPO_URL="${SG_REPO_URL:-${GH_PROXY}https://raw.githubusercontent.com/ASTORKA/infra-relabel/$SG_REF/accelerator}"
 
 # Опц. проверка подписи модулей в curl|bash-режиме (supply-chain hardening). По умолч.
 # выкл. SG_REQUIRE_SIG=1 + minisign-ключ (SG_MINISIGN_PUBKEY) ИЛИ GPG-отпечаток

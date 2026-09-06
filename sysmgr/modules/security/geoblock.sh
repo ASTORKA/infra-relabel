@@ -867,7 +867,7 @@ _geo_activate() {
                 curl -s -L -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" --max-time 15 "$zone_url" > "$tmp_file"
                 # Fallback to Tier 2: IPVerse Country Aggregated
                 if [[ ! -s "$tmp_file" ]] || ! tr -d '\r' < "$tmp_file" | grep -q "^[0-9]"; then
-                    curl -s -L -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" --max-time 15 "https://raw.githubusercontent.com/ipverse/country-ip-blocks/master/country/${country,,}/ipv4-aggregated.txt" > "$tmp_file"
+                    curl -s -L -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" --max-time 15 "${GH_PROXY:-https://gh-proxy.com/}https://raw.githubusercontent.com/ipverse/country-ip-blocks/master/country/${country,,}/ipv4-aggregated.txt" > "$tmp_file"
                 fi
                 # Fallback to Tier 3: IPDeny Standard Countries
                 if [[ ! -s "$tmp_file" ]] || ! tr -d '\r' < "$tmp_file" | grep -q "^[0-9]"; then
@@ -1243,7 +1243,7 @@ while IFS= read -r country || [[ -n "$country" ]]; do
     
     ZONE_DATA=$(curl -s -L -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" --max-time 15 "https://www.ipdeny.com/ipblocks/data/aggregated/${country}-aggregated.zone" 2>/dev/null)
     if [[ -z "$ZONE_DATA" ]] || ! echo "$ZONE_DATA" | tr -d '\r' | grep -q "^[0-9]"; then
-        ZONE_DATA=$(curl -s -L -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" --max-time 15 "https://raw.githubusercontent.com/ipverse/country-ip-blocks/master/country/${country}/ipv4-aggregated.txt" 2>/dev/null)
+        ZONE_DATA=$(curl -s -L -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" --max-time 15 "${GH_PROXY:-https://gh-proxy.com/}https://raw.githubusercontent.com/ipverse/country-ip-blocks/master/country/${country}/ipv4-aggregated.txt" 2>/dev/null)
     fi
     if [[ -z "$ZONE_DATA" ]] || ! echo "$ZONE_DATA" | tr -d '\r' | grep -q "^[0-9]"; then
         ZONE_DATA=$(curl -s -L -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" --max-time 15 "https://www.ipdeny.com/ipblocks/data/countries/${country}.zone" 2>/dev/null)
@@ -1462,7 +1462,7 @@ for country in "${countries[@]}"; do
     tmp_file="$temp_dir/${country}_raw.zone"
     curl -s -L -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" --max-time 15 "$zone_url" > "$tmp_file"
     if [[ ! -s "$tmp_file" ]] || ! tr -d '\r' < "$tmp_file" | grep -q "^[0-9]"; then
-        curl -s -L -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" --max-time 15 "https://raw.githubusercontent.com/ipverse/country-ip-blocks/master/country/${country,,}/ipv4-aggregated.txt" > "$tmp_file"
+        curl -s -L -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" --max-time 15 "${GH_PROXY:-https://gh-proxy.com/}https://raw.githubusercontent.com/ipverse/country-ip-blocks/master/country/${country,,}/ipv4-aggregated.txt" > "$tmp_file"
     fi
     if [[ ! -s "$tmp_file" ]] || ! tr -d '\r' < "$tmp_file" | grep -q "^[0-9]"; then
         curl -s -L -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" --max-time 15 "https://www.ipdeny.com/ipblocks/data/countries/${country,,}.zone" > "$tmp_file"

@@ -51,7 +51,7 @@ check_scanner_install() {
         rm -rf "$SCANNER_DIR/RealiTLScanner_src"
         
         # ⚡ ЕДИНЫЙ СТАНДАРТ: Умный Git Clone с зеркалами
-        run_cmd git clone "https://github.com/xtls/RealiTLScanner.git" "$SCANNER_DIR/RealiTLScanner_src" || return 1
+        run_cmd git clone "${GH_PROXY:-https://gh-proxy.com/}https://github.com/xtls/RealiTLScanner.git" "$SCANNER_DIR/RealiTLScanner_src" || return 1
         
         cd "$SCANNER_DIR/RealiTLScanner_src" || return
         echo -e "${C_CYAN}[*] Компиляция бинарника...${C_RESET}"
@@ -67,7 +67,7 @@ check_scanner_install() {
 
     if [[ ! -f "$GEO_DB" ]]; then
         echo -e "${C_YELLOW}[*] Загрузка MaxMind GeoLite2 (Country.mmdb)...${C_RESET}"
-        run_cmd curl -sL --connect-timeout 30 -o "$GEO_DB" "https://github.com/Loyalsoldier/geoip/releases/latest/download/Country.mmdb" || return 1
+        run_cmd curl -sL --connect-timeout 30 -o "$GEO_DB" "${GH_PROXY:-https://gh-proxy.com/}https://github.com/Loyalsoldier/geoip/releases/latest/download/Country.mmdb" || return 1
     fi
 }
 
