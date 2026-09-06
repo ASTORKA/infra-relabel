@@ -759,6 +759,13 @@ cmd_all() {
 # Установка selfsteal-сайта (маскирующий лендинг Caddy) из форка ASTORKA.
 # Идемпотентно: если контейнер уже есть (caddy-selfsteal или web-frontend) — пропуск.
 # Интерактивно (installer спросит домен и т.п.) — нужен TTY.
+#
+# selfsteal.sh ВЕНДОРЕН в репозиторий (selfsteal/selfsteal.sh) — по умолчанию
+# берём локальную копию, БЕЗ обращения к GitHub (иначе на DPI-сетях скачивание
+# зависает). Если локальной копии нет — скачиваем с таймаутами (не виснем вечно).
+# В обоих случаях внутренние github-ссылки скрипта переписываются на GH_PROXY
+# (он сам тянет шаблоны/acme.sh/api с github).
+SELFSTEAL_LOCAL="$SCRIPT_DIR/selfsteal/selfsteal.sh"
 SELFSTEAL_URL="$(gh_url "https://github.com/ASTORKA/remnawave-scripts/raw/main/selfsteal.sh")"
 cmd_selfsteal() {
   load_conf
@@ -769,17 +776,22 @@ cmd_selfsteal() {
   fi
   if [ "$DRY_RUN" = 1 ]; then
     c_grn "· установить selfsteal (интерактивно — спросит домен)"
-    c_dim "  [dry] bash <(curl -Ls $SELFSTEAL_URL) @ install"
+    if [ -f "$SELFSTEAL_LOCAL" ]; then c_dim "  [dry] bash <(gh_rewrite $SELFSTEAL_LOCAL) @ install  (локальная копия)"
+    else c_dim "  [dry] curl $SELFSTEAL_URL → rewrite → bash @ install"; fi
     return 0
   fi
-  command -v curl >/dev/null 2>&1 || { c_yel "· нет curl — пропускаю selfsteal"; return 0; }
-  c_grn "· установка selfsteal (ответь на вопросы инсталлятора: домен и т.д.)…"
-  # Скачиваем в файл и переписываем ВНУТРЕННИЕ github-URL'ы скрипта на прокси
-  # (selfsteal.sh сам тянет шаблоны/acme.sh/api с github — иначе упрётся в DPI).
   local _sf; _sf="$(mktemp)"
-  if ! curl -Ls "$SELFSTEAL_URL" -o "$_sf" || [ ! -s "$_sf" ]; then
-    c_yel "· не удалось скачать selfsteal ($SELFSTEAL_URL) — пропуск"; rm -f "$_sf"; return 0
+  if [ -f "$SELFSTEAL_LOCAL" ]; then
+    c_grn "· установка selfsteal из локальной копии (ответь на вопросы: домен и т.д.)…"
+    cp "$SELFSTEAL_LOCAL" "$_sf"
+  else
+    command -v curl >/dev/null 2>&1 || { c_yel "· нет curl — пропускаю selfsteal"; rm -f "$_sf"; return 0; }
+    c_grn "· скачиваю selfsteal ($SELFSTEAL_URL)…"
+    if ! curl -fL --connect-timeout 20 --max-time 120 --retry 2 "$SELFSTEAL_URL" -o "$_sf" || [ ! -s "$_sf" ]; then
+      c_yel "· не удалось скачать selfsteal — пропуск (сеть/DPI). Проверь GH_PROXY."; rm -f "$_sf"; return 0
+    fi
   fi
+  # Переписываем ВНУТРЕННИЕ github-URL'ы скрипта на прокси (обход DPI).
   gh_rewrite_file "$_sf"
   bash "$_sf" @ install
   rm -f "$_sf"
