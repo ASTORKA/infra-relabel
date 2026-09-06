@@ -40,6 +40,7 @@ BACKUP_DIR="$STATE_DIR/backups"
 DRY_RUN=0   # 1 — только показывать команды, ничего не выполнять
 NO_MASK=0   # 1 — ставить сервисы, но НЕ переименовывать (для all-with-accelerator)
 NO_SELFSTEAL=0  # 1 — не ставить selfsteal-заглушку (для all-with-accelerator)
+NO_BLOCK=0  # 1 — НЕ ставить блокировщики трафика: protect (firewall) и mobile443
 
 mkdir -p "$STATE_DIR" "$BACKUP_DIR"
 
@@ -827,18 +828,23 @@ cmd_all_with_accel() {
   fi
   echo; c_grn "════ ускорение ноды (accelerator → optimize) ════"
   run bash "$acc" optimize
-  echo; c_grn "════ защита ноды (accelerator → protect) ════"
-  run bash "$acc" protect
-  echo; c_grn "════ фильтр портов (mobile443 block-only) ════"; cmd_mobile443
+  if [ "$NO_BLOCK" = 1 ]; then
+    echo; c_yel "════ блокировщики ПРОПУЩЕНЫ (--no-block): protect и mobile443 не ставлю ════"
+  else
+    echo; c_grn "════ защита ноды (accelerator → protect) ════"
+    run bash "$acc" protect
+    echo; c_grn "════ фильтр портов (mobile443 block-only) ════"; cmd_mobile443
+  fi
   echo; c_grn "════ диагностика (read-only) ════"
   run bash "$acc" diagnose
   echo; c_grn "════ управляющий фреймворк (sysmgr) ════"; cmd_sysmgr
   echo
   if [ "$DRY_RUN" = 1 ]; then c_yel "DRY-RUN завершён — на сервере ничего не изменилось."; else
-    local _ss _mask
+    local _ss _mask _block
     [ "$NO_SELFSTEAL" = 1 ] && _ss="" || _ss="selfsteal + "
     [ "$NO_MASK" = 1 ] && _mask="" || _mask="маскировка + "
-    c_grn "Готово: ${_ss}${_mask}ускорение + защита + mobile443 + sysmgr."
+    [ "$NO_BLOCK" = 1 ] && _block="" || _block="защита + mobile443 + "
+    c_grn "Готово: ${_ss}${_mask}ускорение + ${_block}sysmgr."
     c_yel "Если optimize ставил XanMod — нужен reboot (uname -r должен содержать xanmod)."
     c_dim "Управление: команда 'sysmgr' (TUI)."
   fi
@@ -907,9 +913,10 @@ relabel.sh — маскировка имён docker-контейнеров VPN-�
 
 ОДНОЙ КОМАНДОЙ:
   relabel all [--dry-run]      применить ВСЁ маскирование (A→B→C→D)
-  relabel all-with-accelerator [--dry-run] [--no-mask] [--no-selfsteal]  (root!)
+  relabel all-with-accelerator [--dry-run] [--no-mask] [--no-selfsteal] [--no-block]  (root!)
                                selfsteal+маскирование+optimize+protect+mobile443+sysmgr
                                --no-mask: не переименовывать; --no-selfsteal: не ставить заглушку
+                               --no-block: без блокировщиков (protect + mobile443)
   relabel restore-all [--dry-run]  откатить ВСЁ маскирование
   relabel uninstall [--dry-run]    ПОЛНОЕ удаление: откат всего + снять сервисы и команду
 
@@ -943,6 +950,7 @@ for _a in "$@"; do
     --dry-run) DRY_RUN=1 ;;
     --no-mask) NO_MASK=1 ;;
     --no-selfsteal) NO_SELFSTEAL=1 ;;
+    --no-block|--no-firewall) NO_BLOCK=1 ;;
   esac
 done
 case "${1:-}" in

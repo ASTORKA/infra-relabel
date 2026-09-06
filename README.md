@@ -168,6 +168,45 @@ cd /opt/infra-relabel && ./install.sh \
 > (напр. 9443) в фаервол НЕ добавляй. В `WHITELIST` — IP панели и IP каскад-ноды
 > (иначе per-IP лимиты порежут трафик, идущий с одного IP на 200 юзеров).
 
+## Ускорение + заглушка, БЕЗ блокировщиков трафика (`--no-block`)
+
+Если нужны **только ускорители и selfsteal-заглушка**, но **без блокировщиков**
+(`protect` — nftables-фаервол — и `mobile443` — фильтр портов, которые дропают
+трафик), используй флаг `--no-block`. Он выключает оба блокировщика; ставится:
+selfsteal → маскировка → `optimize` → `diagnose` → `sysmgr`. **Ничего не
+блокирует и не фильтрует порты** — фаервол и порт-фильтр не трогаются.
+
+Так как блокировщиков нет, `TCP_PORTS`/`UDP_PORTS`/`WHITELIST`/`SSH_PORT` **не
+нужны** (их использует только `protect`). Скопировать репо, поставить команду и
+применить всё одним вызовом. **От root:**
+
+```bash
+git clone https://github.com/ASTORKA/infra-relabel /opt/infra-relabel \
+  && cd /opt/infra-relabel && ./install.sh \
+  && NONINTERACTIVE=1 ./relabel.sh all-with-accelerator --no-block
+```
+
+> selfsteal спросит домен интерактивно (`NONINTERACTIVE=1` на него не влияет).
+> `optimize` ставит XanMod-ядро — после него нужен `reboot` (BBRv3 заработает).
+
+**Предпросмотр** (ничего не меняет, покажет все команды):
+
+```bash
+git clone https://github.com/ASTORKA/infra-relabel /opt/infra-relabel \
+  && cd /opt/infra-relabel && ./relabel.sh all-with-accelerator --dry-run --no-block
+```
+
+Чаще всего вместе с `--no-block` нужен и **`--no-mask`** (заглушка + ускорение
+без переименований контейнеров):
+
+```bash
+cd /opt/infra-relabel && ./install.sh \
+  && NONINTERACTIVE=1 ./relabel.sh all-with-accelerator --no-block --no-mask
+```
+
+Флаги комбинируются свободно: `--no-block` (без блокировщиков), `--no-mask` (без
+переименований), `--no-selfsteal` (без заглушки).
+
 ## Быстрый старт — только маскировка
 
 ```bash
@@ -228,7 +267,7 @@ relabel uninstall               # снести всё, что ставил ре�
 | `relabel mobile443` | block-only фильтр портов (дроп blocklist'ов, root) |
 | `relabel ps` | показать процессы внутри контейнеров |
 | `relabel all` | вся маскировка сразу (A→B→C→D) |
-| `relabel all-with-accelerator` | selfsteal + маскировка + `optimize` + `protect` + `mobile443` + `sysmgr` (root). Флаги: `--no-mask` (без переименований), `--no-selfsteal` (без заглушки) |
+| `relabel all-with-accelerator` | selfsteal + маскировка + `optimize` + `protect` + `mobile443` + `sysmgr` (root). Флаги: `--no-mask` (без переименований), `--no-selfsteal` (без заглушки), `--no-block` (без блокировщиков `protect`/`mobile443`) |
 | `relabel uninstall` | ПОЛНОЕ удаление: снять все сервисы + откат маскировки + команду (root) |
 
 Откат по шагам: `restore`, `images-restore`, `project-restore`,
