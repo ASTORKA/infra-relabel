@@ -206,44 +206,45 @@ cd /opt/infra-relabel && ./install.sh \
 > (напр. 9443) в фаервол НЕ добавляй. В `WHITELIST` — IP панели и IP каскад-ноды
 > (иначе per-IP лимиты порежут трафик, идущий с одного IP на 200 юзеров).
 
-## Ускорение + заглушка, БЕЗ блокировщиков трафика (`--no-block`)
+## Заглушка + ускорение, БЕЗ блокировщиков и БЕЗ переименований (`--no-block --no-mask`)
 
-Если нужны **только ускорители и selfsteal-заглушка**, но **без блокировщиков**
-(`protect` — nftables-фаервол — и `mobile443` — фильтр портов, которые дропают
-трафик), используй флаг `--no-block`. Он выключает оба блокировщика; ставится:
-selfsteal → маскировка → `optimize` → `diagnose` → `sysmgr`. **Ничего не
-блокирует и не фильтрует порты** — фаервол и порт-фильтр не трогаются.
+Вариант, когда нужны **только selfsteal-заглушка и ускорители**, но **без
+блокировщиков трафика** (`protect` — nftables-фаервол — и `mobile443` — фильтр
+портов, которые дропают трафик) и **без переименований** контейнеров/образов/
+ядра. Комбинация двух флагов:
+
+- `--no-block` — не ставить блокировщики (`protect` + `mobile443`);
+- `--no-mask` — ничего не переименовывать (контейнеры остаются `remnanode`/`xray`).
+
+Ставится по порядку: **selfsteal → `optimize` → `diagnose` → `sysmgr`.**
+Ничего не блокирует, не фильтрует порты и не переименовывает.
 
 Так как блокировщиков нет, `TCP_PORTS`/`UDP_PORTS`/`WHITELIST`/`SSH_PORT` **не
-нужны** (их использует только `protect`). Скопировать репо, поставить команду и
-применить всё одним вызовом. **От root:**
+нужны** (их использует только `protect`). **От root:**
 
 ```bash
-git clone https://github.com/ASTORKA/infra-relabel /opt/infra-relabel \
-  && cd /opt/infra-relabel && ./install.sh \
-  && NONINTERACTIVE=1 ./relabel.sh all-with-accelerator --no-block
-```
-
-> selfsteal спросит домен интерактивно (`NONINTERACTIVE=1` на него не влияет).
-> `optimize` ставит XanMod-ядро — после него нужен `reboot` (BBRv3 заработает).
-
-**Предпросмотр** (ничего не меняет, покажет все команды):
-
-```bash
-git clone https://github.com/ASTORKA/infra-relabel /opt/infra-relabel \
-  && cd /opt/infra-relabel && ./relabel.sh all-with-accelerator --dry-run --no-block
-```
-
-Чаще всего вместе с `--no-block` нужен и **`--no-mask`** (заглушка + ускорение
-без переименований контейнеров):
-
-```bash
+rm -rf /opt/infra-relabel && mkdir -p /opt/infra-relabel
+curl -fL --ipv4 https://gh-proxy.com/https://codeload.github.com/ASTORKA/infra-relabel/tar.gz/refs/heads/main \
+  | tar -xz --strip-components=1 -C /opt/infra-relabel
 cd /opt/infra-relabel && ./install.sh \
   && NONINTERACTIVE=1 ./relabel.sh all-with-accelerator --no-block --no-mask
 ```
 
+> selfsteal спросит домен интерактивно (`NONINTERACTIVE=1` на него не влияет) и
+> ставится из вендоренной локальной копии (без скачивания с GitHub).
+> `optimize` ставит XanMod-ядро — после него нужен `reboot` (BBRv3 заработает).
+> На DPI-сетях обращения к GitHub идут через `GH_PROXY` (см. раздел выше);
+> обычный `git clone` можно заменить на архив через прокси, как показано.
+
+**Предпросмотр** (ничего не меняет, покажет все команды):
+
+```bash
+cd /opt/infra-relabel && ./relabel.sh all-with-accelerator --dry-run --no-block --no-mask
+```
+
 Флаги комбинируются свободно: `--no-block` (без блокировщиков), `--no-mask` (без
-переименований), `--no-selfsteal` (без заглушки).
+переименований), `--no-selfsteal` (без заглушки). Например, только ускорение +
+блокировщики без заглушки и без переименований — `--no-mask --no-selfsteal`.
 
 ## Быстрый старт — только маскировка
 
