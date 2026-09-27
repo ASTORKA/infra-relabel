@@ -43,9 +43,10 @@ NO_SELFSTEAL=0  # 1 — не ставить selfsteal-заглушку (для a
 NO_BLOCK=0  # 1 — НЕ ставить блокировщики трафика: protect (firewall) и mobile443
 
 # Прокси-префикс для обхода DPI-блокировок GitHub (raw/api/codeload/git clone).
-# По умолчанию https://gh-proxy.com/ ; переопределяется через ENV; пусто = напрямую.
+# По умолчанию https://gh-proxy.com/ ; переопределяется через ENV; пусто (GH_PROXY=) = напрямую.
+# Именно `-`, а не `:-`: с `:-` пустое значение подменялось дефолтным прокси.
 # Экспортируем, чтобы дочерние скрипты (accelerator, mobile443) унаследовали значение.
-GH_PROXY="${GH_PROXY:-https://gh-proxy.com/}"
+GH_PROXY="${GH_PROXY-https://gh-proxy.com/}"
 export GH_PROXY
 
 # Завернуть один github-URL через прокси (пусто GH_PROXY → URL без изменений).
