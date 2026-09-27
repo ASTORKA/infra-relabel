@@ -28,7 +28,10 @@
   иначе весь RX-softirq висит на cpu0 — это и есть реальный потолок PPS.
 - **zram-swap** на мелких нодах (tier 1/2), иначе `/swapfile`; **MSS clamp к PMTU** (opt-in, для
   routed/WireGuard); **`tcp_min_snd_mss`-пол** от MSS-коллапса на туннелях.
-- **nofile/nproc → 1 048 576**, journald-cap, THP=never, governor=performance, NIC tune, irqbalance.
+- **nofile/nproc → 1 048 576**, journald-cap, THP=never, governor=performance, irqbalance.
+- **NIC tune** — ring 4096, txqueuelen 10000, расширенная очередь `fq` (limit 100000, flow_limit 1000,
+  buckets 8192; на многоочередной карте — на каждой дочерней очереди `mq`); **GRO выключается
+  автоматически на `virtio_net`** (на virtio-VPS он даёт просадки под VPN-нагрузкой), на прочих — вкл.
 
 ### 🛡 Защита (`scripts/protect.sh`)
 `nftables`-движок в **своей** таблице `inet sysguard` (не `flush ruleset` — сосуществует с CrowdSec и Docker):
@@ -123,7 +126,7 @@ curl -fsSL "https://raw.githubusercontent.com/ASTORKA/infra-relabel/$SG_REF/acce
 | `SG_CTG_ENFORCE` | `0` | `0` — observe (только лог), `1` — эвиктить фантомы |
 | `SG_CTG_PHANTOM_MIN` / `SG_CTG_LIVE_FLOOR` | `4000` / `2` | порог conntrack-холдера / порог живых сокетов |
 
-`optimize.sh`: `ENABLE_XANMOD=1`, `XANMOD_FLAVOR=lts|main|edge|rt`, `XANMOD_PKG=...`, `SWAP_SIZE=2G`, `TCP_ECN_MODE=2` (0/1/2), `DISABLE_TFO=0`, `ENABLE_MSS_CLAMP=0` (для routed/WireGuard-нод), `SETUP_NO_ZRAM=0`. Буферы/conntrack/somaxconn — **tier-aware** (масштаб от RAM).
+`optimize.sh`: `ENABLE_XANMOD=1`, `XANMOD_FLAVOR=lts|main|edge|rt`, `XANMOD_PKG=...`, `SWAP_SIZE=2G`, `TCP_ECN_MODE=2` (0/1/2), `DISABLE_TFO=0`, `ENABLE_MSS_CLAMP=0` (для routed/WireGuard-нод), `SETUP_NO_ZRAM=0`, `NIC_DISABLE_GRO=auto` (auto — GRO выкл только на `virtio_net`; `1`/`0` — принудительно), `FQ_LIMIT=100000` / `FQ_FLOW_LIMIT=1000` / `FQ_BUCKETS=8192` (расширенная очередь `fq`; на многоочередной карте корень `mq` сохраняется). Буферы/conntrack/somaxconn — **tier-aware** (масштаб от RAM).
 `XANMOD_PROBE=1` — проверить, что репозиторий+ключ+сборка ядра резолвятся на этой ОС, **без установки** (для CI и быстрой проверки совместимости).
 
 ---

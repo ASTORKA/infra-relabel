@@ -440,29 +440,79 @@ systemctl enable --now sys-rps.service >/dev/null 2>&1 || true
 ok "RPS/RFS/XPS включены ($(nproc) ядер)"
 
 # ─── 6. NIC tuning ───────────────────────────────────────────────────────────
-title "NIC tuning (ring buffer, offloads)"
+title "NIC tuning (ring buffer, offloads, fq)"
+# NIC_DISABLE_GRO: auto — выключить GRO только на virtio_net (на virtio-VPS GRO даёт
+# просадки/джиттер под VPN-нагрузкой), 1 — выключить всегда, 0 — всегда включать.
+# FQ_LIMIT/FQ_FLOW_LIMIT/FQ_BUCKETS — расширенная очередь fq вместо дефолтной
+# (10000/100/1024 пакетов), чтобы не терять пакеты на всплесках.
+NIC_DISABLE_GRO="${NIC_DISABLE_GRO:-auto}"; [[ "$NIC_DISABLE_GRO" =~ ^(auto|0|1)$ ]] || NIC_DISABLE_GRO=auto
+FQ_LIMIT="${FQ_LIMIT:-100000}";         [[ "$FQ_LIMIT" =~ ^[1-9][0-9]*$ ]] || FQ_LIMIT=100000
+FQ_FLOW_LIMIT="${FQ_FLOW_LIMIT:-1000}"; [[ "$FQ_FLOW_LIMIT" =~ ^[1-9][0-9]*$ ]] || FQ_FLOW_LIMIT=1000
+FQ_BUCKETS="${FQ_BUCKETS:-8192}";       [[ "$FQ_BUCKETS" =~ ^[1-9][0-9]*$ ]] || FQ_BUCKETS=8192
 NIC="$(default_iface || true)"
 if [[ -n "${NIC:-}" ]]; then
+    cat > /usr/local/sbin/sys-nic-tune-setup <<'NICT'
+#!/usr/bin/env bash
+# Тюнинг основного интерфейса: ring, offloads (GRO по драйверу), txqueuelen, fq.
+# Параметры: NIC NIC_DISABLE_GRO FQ_LIMIT FQ_FLOW_LIMIT FQ_BUCKETS (из юнита).
+NIC="${NIC:-$(ip -o -4 route show default 2>/dev/null | awk '{print $5; exit}')}"
+[ -n "$NIC" ] && [ -d "/sys/class/net/$NIC" ] || exit 0
+drv="$(basename "$(readlink -f "/sys/class/net/$NIC/device/driver" 2>/dev/null)" 2>/dev/null)"
+[ -n "$drv" ] || drv="$(ethtool -i "$NIC" 2>/dev/null | awk -F': ' '$1=="driver"{print $2; exit}')"
+gro=on
+case "${NIC_DISABLE_GRO:-auto}" in
+    1) gro=off ;;
+    auto) case "$drv" in virtio|virtio_net|virtio-net) gro=off ;; esac ;;
+esac
+ethtool -G "$NIC" rx 4096 tx 4096 2>/dev/null || true
+ethtool -K "$NIC" gso on tso on 2>/dev/null || true
+ethtool -K "$NIC" gro "$gro" 2>/dev/null || true
+[ "$gro" = off ] && { ethtool -K "$NIC" rx-gro-hw off 2>/dev/null || true; }
+ip link set "$NIC" txqueuelen 10000 2>/dev/null || true
+
+# fq с увеличенными очередями. На многоочередной карте корень mq сохраняем и
+# меняем только дочерние очереди; иначе fq ставится корнем.
+fq() {
+    tc qdisc replace dev "$NIC" "$@" fq limit "${FQ_LIMIT:-100000}" flow_limit "${FQ_FLOW_LIMIT:-1000}" \
+        buckets "${FQ_BUCKETS:-8192}" 2>/dev/null \
+    || tc qdisc replace dev "$NIC" "$@" fq limit "${FQ_LIMIT:-100000}" flow_limit "${FQ_FLOW_LIMIT:-1000}" 2>/dev/null
+}
+ntx="$(ls -d /sys/class/net/"$NIC"/queues/tx-* 2>/dev/null | wc -l)"
+qdisc="skip"
+if [ "$ntx" -le 1 ]; then
+    fq root && qdisc="fq root"
+elif [ "$(tc qdisc show dev "$NIC" | awk '$4=="root"{print $2; exit}')" = mq ]; then
+    n=0
+    for p in $(tc qdisc show dev "$NIC" | awk '{for(i=1;i<=NF;i++) if($i=="parent") print $(i+1)}' | sort -u); do
+        fq parent "$p" && n=$((n+1))
+    done
+    qdisc="fq x$n (mq)"
+fi
+echo "sys-nic-tune: NIC=$NIC driver=${drv:-?} gro=$gro qdisc=$qdisc"
+NICT
+    chmod +x /usr/local/sbin/sys-nic-tune-setup
     cat > /etc/systemd/system/sys-nic-tune.service <<EOF
 [Unit]
 Description=sysguard NIC tuning ($NIC)
 After=network-online.target
 Wants=network-online.target
+Before=docker.service
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/bin/sh -c '\
-    ethtool -G $NIC rx 4096 tx 4096 2>/dev/null || true; \
-    ethtool -K $NIC gro on gso on tso on 2>/dev/null || true; \
-    ip link set $NIC txqueuelen 10000 2>/dev/null || true'
+Environment=NIC=$NIC NIC_DISABLE_GRO=$NIC_DISABLE_GRO FQ_LIMIT=$FQ_LIMIT FQ_FLOW_LIMIT=$FQ_FLOW_LIMIT FQ_BUCKETS=$FQ_BUCKETS
+ExecStart=/usr/local/sbin/sys-nic-tune-setup
 
 [Install]
 WantedBy=multi-user.target
 EOF
     systemctl daemon-reload
-    systemctl enable --now sys-nic-tune.service >/dev/null 2>&1 || true
-    ok "NIC=$NIC: ring 4096, GRO/GSO/TSO on, txqueuelen 10000"
+    systemctl enable sys-nic-tune.service >/dev/null 2>&1 || true
+    # restart, а не --now: при повторном optimize юнит уже active и не перезапустится.
+    systemctl restart sys-nic-tune.service >/dev/null 2>&1 || true
+    _nic_res="$(journalctl -u sys-nic-tune.service -n 1 -o cat 2>/dev/null | grep '^sys-nic-tune:' || true)"
+    ok "NIC=$NIC: ring 4096, GSO/TSO on, txqueuelen 10000, ${_nic_res#sys-nic-tune: NIC=$NIC }"
 else
     warn "Основной интерфейс не определён — NIC tuning пропущен"
 fi
@@ -643,7 +693,8 @@ EOF
 # Персист конфига оптимизатора → ре-ран без ENV не сбрасывает выбор сборки/флейвора.
 save_conf "$CONF_DIR/optimize.conf" \
     ENABLE_XANMOD XANMOD_FLAVOR SWAP_SIZE \
-    DISABLE_TFO TCP_ECN_MODE ENABLE_MSS_CLAMP SETUP_NO_ZRAM
+    DISABLE_TFO TCP_ECN_MODE ENABLE_MSS_CLAMP SETUP_NO_ZRAM \
+    NIC_DISABLE_GRO FQ_LIMIT FQ_FLOW_LIMIT FQ_BUCKETS
 
 title "ГОТОВО"
 ok "Оптимизатор применён."

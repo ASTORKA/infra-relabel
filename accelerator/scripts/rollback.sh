@@ -27,7 +27,11 @@ rollback_optimize() {
         systemctl disable --now "$svc.service" >/dev/null 2>&1 || true
         rm -f "/etc/systemd/system/$svc.service"
     done
-    rm -f /usr/local/sbin/sys-rps-setup /usr/local/sbin/sys-zram-setup
+    rm -f /usr/local/sbin/sys-rps-setup /usr/local/sbin/sys-zram-setup /usr/local/sbin/sys-nic-tune-setup
+    # fq-очереди nic-tune: снять корневой qdisc → ядро вернёт дефолтный (mq / default_qdisc).
+    # GRO/ring не трогаем: исходных значений не сохраняли, восстановить нечем.
+    local _nic; _nic="$(default_iface || true)"
+    [[ -n "$_nic" ]] && { tc qdisc del dev "$_nic" root 2>/dev/null || true; }
     # MSS-clamp: снять свою таблицу
     nft delete table inet sys_mss 2>/dev/null || true
     rm -f "$CONF_DIR/sys_mss.nft"

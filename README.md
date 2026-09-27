@@ -21,6 +21,11 @@
 >   дропает IP из blocklist'ов (гос-сети, антисканеры). Легитимных юзеров не режет.
 > - **`sysmgr/`** — TUI-фреймворк управления нодой/флотом (дашборд, шейпер
 >   трафика, security, gateway). Вендорен, де-брендирован, самообновление выкл.
+> - **`bootstrap/`** — подготовка чистого сервера (из vpn-bootstrap): имя узла,
+>   пакеты, Docker, SSH только по ключу + свой порт, speedtest, опц. zsh/IPv6.
+>   Команда `relabel bootstrap`, запускается первой.
+> - **`netguard/`** — blocklist гос-сетей/антисканеров на **весь хост** в обе
+>   стороны (из vpn-bootstrap), атомарное ежедневное обновление.
 >
 > Подробности по каждому — ниже.
 
@@ -103,7 +108,11 @@ git clone https://github.com/ASTORKA/infra-relabel /opt/infra-relabel \
 Что делает по порядку: **selfsteal** (маскирующий сайт — если ещё не стоит) →
 маскировка `all` (A→B→C→D) → `optimize` (XanMod+BBRv3, sysctl) →
 `protect` (nftables-firewall) → **mobile443** (block-only фильтр портов) →
-`diagnose` → **sysmgr** (управляющий фреймворк).
+**netguard** (blocklist на весь хост) → `diagnose` → **sysmgr** (управляющий фреймворк).
+
+> На **совсем чистом** сервере (нет Docker, SSH по паролю) сначала
+> `relabel bootstrap`, см. раздел [«Подготовка чистого сервера»](#подготовка-чистого-сервера-bootstrap).
+> Выбранный там порт SSH `all-with-accelerator` подхватит сам.
 
 > selfsteal ставится первым (его контейнер `caddy-selfsteal` тут же
 > переименуется в `web-frontend` шагом маскировки) и **спросит домен**
@@ -213,7 +222,7 @@ cd /opt/infra-relabel && ./install.sh \
 портов, которые дропают трафик) и **без переименований** контейнеров/образов/
 ядра. Комбинация двух флагов:
 
-- `--no-block` — не ставить блокировщики (`protect` + `mobile443`);
+- `--no-block` — не ставить блокировщики (`protect` + `mobile443` + `netguard`);
 - `--no-mask` — ничего не переименовывать (контейнеры остаются `remnanode`/`xray`).
 
 Ставится по порядку: **selfsteal → `optimize` → `diagnose` → `sysmgr`.**
@@ -281,13 +290,15 @@ relabel uninstall               # снести всё, что ставил ре�
 `uninstall` (полное удаление, в обратном порядке установки):
 
 1. `mobile443` — `asn.sh remove` (снимает фильтр, ipset, systemd-таймер);
-2. `accelerator` — `rollback all` (убирает nftables-firewall и тюнинг);
-3. `sysmgr` — удаляет `/opt/sysmgr`, команду, лог, базу флота, alias;
-4. **размаскировка** — `restore-all` (контейнеры/образы/проекты/ядро как было);
-5. снимает команду `relabel` (`/usr/local/bin/relabel`).
+2. `netguard` — снимает blocklist на весь хост (правила, ipset, таймер);
+3. `accelerator` — `rollback all` (убирает nftables-firewall и тюнинг);
+4. `sysmgr` — удаляет `/opt/sysmgr`, команду, лог, базу флота, alias;
+5. **размаскировка** — `restore-all` (контейнеры/образы/проекты/ядро как было);
+6. снимает команду `relabel` (`/usr/local/bin/relabel`).
 
 > Что `uninstall` НЕ трогает (по соображениям безопасности): **selfsteal-сайт**
-> (рабочая заглушка — снимай отдельно его инсталлятором) и **каталог репо**
+> (рабочая заглушка — снимай отдельно его инсталлятором), **подготовку сервера**
+`bootstrap` (SSH/Docker/пакеты — это базовая система) и **каталог репо**
 > (`rm -rf /opt/infra-relabel` вручную). Модули sysmgr, включённые вручную из
 > TUI (geoblock/shaper), снимай заранее в самом `sysmgr`. Требует root.
 
@@ -304,9 +315,11 @@ relabel uninstall               # снести всё, что ставил ре�
 | `relabel selfsteal` | установить selfsteal-сайт из форка ASTORKA (если не стоит) |
 | `relabel sysmgr` | установить управляющий фреймворк sysmgr (TUI, root) |
 | `relabel mobile443` | block-only фильтр портов (дроп blocklist'ов, root) |
+| `relabel bootstrap` | подготовка чистого сервера: имя, пакеты, Docker, SSH по ключу, speedtest (root, первым) |
+| `relabel netguard` | blocklist гос-сетей/антисканеров на весь хост, вход+выход (root); снять — `netguard-remove` |
 | `relabel ps` | показать процессы внутри контейнеров |
 | `relabel all` | вся маскировка сразу (A→B→C→D) |
-| `relabel all-with-accelerator` | selfsteal + маскировка + `optimize` + `protect` + `mobile443` + `sysmgr` (root). Флаги: `--no-mask` (без переименований), `--no-selfsteal` (без заглушки), `--no-block` (без блокировщиков `protect`/`mobile443`) |
+| `relabel all-with-accelerator` | selfsteal + маскировка + `optimize` + `protect` + `mobile443` + `netguard` + `sysmgr` (root). Флаги: `--no-mask` (без переименований), `--no-selfsteal` (без заглушки), `--no-block` (без блокировщиков `protect`/`mobile443`/`netguard`) |
 | `relabel uninstall` | ПОЛНОЕ удаление: снять все сервисы + откат маскировки + команду (root) |
 
 Откат по шагам: `restore`, `images-restore`, `project-restore`,
@@ -466,3 +479,83 @@ ipset `traf_guard_*`, iptables-цепочки.
 > Сам инструмент (`asn.sh`) вендорен — от репо автора не зависим.
 > Имена `mobile443`/`*_443` функциональные (де-бренд не запрашивался) — при
 > желании переименуем отдельно.
+
+## Подготовка чистого сервера (`bootstrap/`)
+
+В каталоге [`bootstrap/`](bootstrap/) — **вендоренная** и переработанная часть
+[vpn-bootstrap](https://github.com/wh3r3ar3you/vpn-bootstrap) (MIT, копирайт в
+[`bootstrap/LICENSE`](bootstrap/LICENSE)). Взято только то, чего не делает
+`accelerator/`. XanMod, sysctl, RPS/RFS, irqbalance, conntrack и anti-flood из
+vpn-bootstrap не дублируются: их уже ставят `optimize`/`protect`.
+
+Запускается **первым** на свежем Debian/Ubuntu, до `all-with-accelerator` (ставит Docker,
+без которого `relabel` не работает):
+
+```bash
+relabel bootstrap --dry-run   # показать план
+relabel bootstrap             # интерактивно: имя узла, порт SSH, ключ, zsh, IPv6
+```
+
+Что делает (всё идемпотентно):
+
+- имя узла + `/etc/hosts` (+ `preserve_hostname` для cloud-init, чтобы имя не сбрасывалось);
+- `apt upgrade` + пакеты администрирования (`htop`, `nload`, `iftop`, `tcpdump`, `vim`, `git`…);
+- Docker через `get.docker.com`, если его нет;
+- SSH: ключ root в `authorized_keys`, вход **только по ключу**, свой порт,
+  `MaxStartups 100:30:200`, `MaxAuthTries 3`. Пишет drop-in
+  `/etc/ssh/sshd_config.d/00-sys-hardening.conf`, который перекрывает
+  `50-cloud-init.conf` с `PasswordAuthentication yes`. Проверяет конфиг через
+  `sshd -t` и при ошибке откатывает его. Учитывает `ssh.socket` (Ubuntu 22.10+), иначе
+  смена порта не применилась бы;
+- speedtest (Ookla CLI → `/usr/local/bin/speedtest`);
+- опционально: Oh My Zsh + Powerlevel10k для root, отключение IPv6.
+
+Защита от потери доступа:
+
+- если в `authorized_keys` нет ни одного ключа, вход по паролю **не отключается**;
+- если firewall `protect` уже стоит, порт SSH не меняется (новый порт был бы закрыт);
+- выбранный порт сохраняется в `.state/bootstrap.env`, и `all-with-accelerator`
+  сам передаёт его в `protect` как `SSH_PORT`.
+
+Без вопросов:
+
+```bash
+NONINTERACTIVE=1 BS_HOSTNAME=node-1 SSH_PORT=2222 SSH_KEY="ssh-ed25519 AAAA… me@pc" \
+  relabel bootstrap
+```
+
+Остальные ENV: `BS_UPGRADE=1`, `BS_DOCKER=1`, `BS_SSH=1`, `BS_SPEEDTEST=1`,
+`BS_ZSH=0`, `BS_DISABLE_IPV6=0`. `uninstall` подготовку сервера **не откатывает**,
+потому что это базовая система. Бэкап конфигов SSH лежит в `/var/backups/sys-bootstrap/<дата>/`.
+
+## Blocklist на весь хост (`netguard/`)
+
+Та же идея, что Traffic Guard в vpn-bootstrap: сети из листов
+`traffic-guard-lists` (гос-сети + антисканеры) режутся **на всём хосте и в обе стороны**:
+
+- входящие от них: `DROP` в `INPUT`/`FORWARD`/`DOCKER-USER`;
+- исходящие к ним: `REJECT` в `OUTPUT`/`FORWARD`/`DOCKER-USER`, чтобы ни нода, ни её
+  клиенты не ходили в эти сети. Выключается через `NG_OUTBOUND=0`.
+
+Отличие от `mobile443`: тот дропает только **входящие** и только на **VPN-портах**,
+а netguard закрывает всё. Вместе они не конфликтуют.
+
+```bash
+relabel netguard                        # установить / обновить листы (root)
+WHITELIST="IP_ПАНЕЛИ" relabel netguard  # адреса, которые не режутся никогда
+NG_OUTBOUND=0 relabel netguard          # только входящие
+sys-netguard status                     # состояние
+relabel netguard-remove                 # снять
+```
+
+Обновление атомарное: новый ipset собирается рядом и подменяется через
+`ipset swap`. Если листы не скачались, остаётся прежний набор. При загрузке набор
+сразу поднимается из кэша, без ожидания сети. Листы идут через `GH_PROXY`.
+Артефакты (схема `sys-*`): `/usr/local/sbin/sys-netguard`, конфиг
+`/etc/default/sys-netguard`, кэш `/var/lib/sys-netguard/`, юниты
+`sys-netguard.service` + `sys-netguard.timer` (раз в сутки), ipset `sys_netguard`,
+цепочки `SYS_NETGUARD_IN/OUT`.
+
+Входит в `all-with-accelerator` вместе с остальными блокировщиками (пропускается
+по `--no-block`) и снимается `uninstall`. Ограничение то же, что у оригинала:
+только IPv4 (IPv6-записи из листов пропускаются).

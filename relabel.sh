@@ -839,12 +839,52 @@ cmd_mobile443() {
   fi
 }
 
+# Первичная подготовка чистого сервера (vpn-bootstrap, вендорен в bootstrap/):
+# имя узла, пакеты, Docker, SSH (ключ, порт, вход только по ключу), speedtest,
+# опц. zsh/IPv6. Интерактивно; без вопросов — через ENV + NONINTERACTIVE=1.
+# Выбранный порт SSH сохраняется и подхватывается all-with-accelerator (protect).
+BOOTSTRAP_STATE_FILE="$STATE_DIR/bootstrap.env"
+cmd_bootstrap() {
+  local b="$SCRIPT_DIR/bootstrap/bootstrap.sh"
+  [ -f "$b" ] || die "bootstrap не найден ($b)"
+  if [ "$DRY_RUN" != 1 ] && [ "${EUID:-$(id -u)}" -ne 0 ]; then die "bootstrap требует root"; fi
+  c_grn "· подготовка сервера (bootstrap)…"
+  DRY_RUN="$DRY_RUN" BS_STATE_FILE="$BOOTSTRAP_STATE_FILE" bash "$b"
+}
+
+# Blocklist гос-сетей и антисканеров на ВЕСЬ хост (в обе стороны), ежедневное
+# атомарное обновление. Дополняет mobile443 (тот — только входящие на VPN-портах).
+# WHITELIST (как у protect) — адреса, которые никогда не режутся.
+cmd_netguard() {
+  local n="$SCRIPT_DIR/netguard/netguard.sh"
+  if [ ! -f "$n" ]; then c_yel "· netguard не найден ($n) — пропуск"; return 0; fi
+  if [ "$DRY_RUN" != 1 ] && [ "${EUID:-$(id -u)}" -ne 0 ]; then c_yel "· netguard требует root — пропуск"; return 0; fi
+  if [ -f /etc/default/sys-netguard ]; then
+    c_grn "· netguard уже установлен — обновляю листы…"
+    run /usr/local/sbin/sys-netguard update
+  else
+    c_grn "· установка netguard (blocklist на весь хост, обновление раз в сутки)…"
+    DRY_RUN="$DRY_RUN" bash "$n" install
+  fi
+}
+
+cmd_netguard_remove() {
+  if [ -f /etc/default/sys-netguard ] || [ -x /usr/local/sbin/sys-netguard ]; then
+    DRY_RUN="$DRY_RUN" bash "$SCRIPT_DIR/netguard/netguard.sh" remove
+  else c_dim "· netguard не установлен — пропуск"; fi
+}
+
 # Маскировка + ускорение/защита ноды (accelerator) одной командой. Нужен root.
 # Порты firewall: protect спросит интерактивно, либо задайте через ENV
 # (TCP_PORTS/UDP_PORTS/SSH_PORT/WHITELIST + NONINTERACTIVE=1) ДО запуска.
 cmd_all_with_accel() {
   if [ "${EUID:-$(id -u)}" -ne 0 ]; then
     c_yel "ВНИМАНИЕ: selfsteal/optimize/protect требуют root — запусти через sudo, иначе они пропустятся."
+  fi
+  # Порт SSH, выбранный в `relabel bootstrap`, — чтобы protect не закрыл его.
+  if [ -z "${SSH_PORT:-}" ] && [ -f "$BOOTSTRAP_STATE_FILE" ]; then
+    SSH_PORT="$(sed -n 's/^SSH_PORT=\([0-9][0-9]*\)$/\1/p' "$BOOTSTRAP_STATE_FILE" | tail -1)"
+    if [ -n "$SSH_PORT" ]; then export SSH_PORT; c_dim "· SSH_PORT=$SSH_PORT (из bootstrap)"; else unset SSH_PORT; fi
   fi
   if [ "$NO_SELFSTEAL" = 1 ]; then
     echo; c_yel "════ selfsteal ПРОПУЩЕН (--no-selfsteal): заглушку не ставлю ════"
@@ -864,11 +904,12 @@ cmd_all_with_accel() {
   echo; c_grn "════ ускорение ноды (accelerator → optimize) ════"
   run bash "$acc" optimize
   if [ "$NO_BLOCK" = 1 ]; then
-    echo; c_yel "════ блокировщики ПРОПУЩЕНЫ (--no-block): protect и mobile443 не ставлю ════"
+    echo; c_yel "════ блокировщики ПРОПУЩЕНЫ (--no-block): protect, mobile443 и netguard не ставлю ════"
   else
     echo; c_grn "════ защита ноды (accelerator → protect) ════"
     run bash "$acc" protect
     echo; c_grn "════ фильтр портов (mobile443 block-only) ════"; cmd_mobile443
+    echo; c_grn "════ blocklist на весь хост (netguard) ════"; cmd_netguard
   fi
   echo; c_grn "════ диагностика (read-only) ════"
   run bash "$acc" diagnose
@@ -878,7 +919,7 @@ cmd_all_with_accel() {
     local _ss _mask _block
     [ "$NO_SELFSTEAL" = 1 ] && _ss="" || _ss="selfsteal + "
     [ "$NO_MASK" = 1 ] && _mask="" || _mask="маскировка + "
-    [ "$NO_BLOCK" = 1 ] && _block="" || _block="защита + mobile443 + "
+    [ "$NO_BLOCK" = 1 ] && _block="" || _block="защита + mobile443 + netguard + "
     c_grn "Готово: ${_ss}${_mask}ускорение + ${_block}sysmgr."
     c_yel "Если optimize ставил XanMod — нужен reboot (uname -r должен содержать xanmod)."
     c_dim "Управление: команда 'sysmgr' (TUI)."
@@ -908,6 +949,9 @@ cmd_uninstall() {
   if [ -d /opt/mobile443 ] && [ -f "$SCRIPT_DIR/mobile443/asn.sh" ]; then
     run bash "$SCRIPT_DIR/mobile443/asn.sh" remove block-only
   else c_dim "· mobile443 не установлен — пропуск"; fi
+
+  echo; c_grn "════ удаление netguard (blocklist на весь хост) ════"
+  cmd_netguard_remove
 
   echo; c_grn "════ откат accelerator (firewall + тюнинг) ════"
   if [ -f "$SCRIPT_DIR/accelerator/install.sh" ]; then
@@ -939,6 +983,7 @@ cmd_uninstall() {
   c_grn "Удаление завершено."
   c_yel "Осталось вручную (по желанию):"
   c_dim "  • selfsteal-сайт (контейнер caddy-selfsteal) — снять его инсталлятором, не трогали"
+  c_dim "  • подготовку сервера (bootstrap: SSH, Docker, пакеты) — не откатываем, это базовая система"
   c_dim "  • каталог репозитория:  rm -rf $SCRIPT_DIR"
 }
 
@@ -947,11 +992,13 @@ usage() {
 relabel.sh — маскировка имён docker-контейнеров VPN-ноды
 
 ОДНОЙ КОМАНДОЙ:
+  relabel bootstrap [--dry-run]  подготовить чистый сервер: имя, пакеты, Docker,
+                               SSH по ключу, speedtest (root; до всего остального)
   relabel all [--dry-run]      применить ВСЁ маскирование (A→B→C→D)
   relabel all-with-accelerator [--dry-run] [--no-mask] [--no-selfsteal] [--no-block]  (root!)
-                               selfsteal+маскирование+optimize+protect+mobile443+sysmgr
+                               selfsteal+маскирование+optimize+protect+mobile443+netguard+sysmgr
                                --no-mask: не переименовывать; --no-selfsteal: не ставить заглушку
-                               --no-block: без блокировщиков (protect + mobile443)
+                               --no-block: без блокировщиков (protect + mobile443 + netguard)
   relabel restore-all [--dry-run]  откатить ВСЁ маскирование
   relabel uninstall [--dry-run]    ПОЛНОЕ удаление: откат всего + снять сервисы и команду
 
@@ -965,6 +1012,8 @@ relabel.sh — маскировка имён docker-контейнеров VPN-�
   relabel selfsteal [--dry-run] установить selfsteal-сайт (если ещё не стоит)
   relabel sysmgr [--dry-run]   установить управляющий фреймворк sysmgr (root)
   relabel mobile443 [--dry-run] фильтр портов: дроп blocklist'ов, block-only (root)
+  relabel netguard [--dry-run]  blocklist на весь хост, вход+выход, ежедневно (root)
+  relabel netguard-remove       снять netguard
   relabel ps                   показать процессы внутри контейнеров
 
 ОТКАТ ПО ШАГАМ:  restore / images-restore / project-restore /
@@ -979,7 +1028,11 @@ EOF
 
 # --- точка входа ------------------------------------------------------------
 
-need_docker
+# Docker нужен всем командам маскировки, но не подготовке чистого сервера.
+case "${1:-}" in
+  bootstrap|netguard|netguard-remove|""|-h|--help|help) ;;
+  *) need_docker ;;
+esac
 for _a in "$@"; do
   case "$_a" in
     --dry-run) DRY_RUN=1 ;;
@@ -1007,6 +1060,9 @@ case "${1:-}" in
   selfsteal)         cmd_selfsteal ;;
   sysmgr)            cmd_sysmgr ;;
   mobile443)         cmd_mobile443 ;;
+  bootstrap)         cmd_bootstrap ;;
+  netguard)          cmd_netguard ;;
+  netguard-remove)   cmd_netguard_remove ;;
   ps)                cmd_ps ;;
   ""|-h|--help|help) usage ;;
   *) die "неизвестная команда: $1 (см. --help)" ;;
