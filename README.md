@@ -1,5 +1,39 @@
 # infra-relabel
 
+## 🚀 Установка одной командой (с нуля, без переименований)
+
+На чистом Debian/Ubuntu, **от root**. Ставит всё: подготовку сервера
+(`bootstrap`) → selfsteal-заглушку → ускорение (`optimize`) → защиту
+(`protect` + `mobile443` + `netguard`) → `sysmgr`. Контейнеры, образы и ядро
+**не переименовываются** (`--no-mask`). IP панели `95.85.245.139` — в whitelist.
+
+```bash
+apt update && apt install -y curl && rm -rf /opt/infra-relabel && mkdir -p /opt/infra-relabel && curl -fL --ipv4 https://gh-proxy.com/https://codeload.github.com/ASTORKA/infra-relabel/tar.gz/refs/heads/2809b | tar -xz --strip-components=1 -C /opt/infra-relabel && cd /opt/infra-relabel && ./install.sh && ./relabel.sh bootstrap && TCP_PORTS="443" UDP_PORTS="443" WHITELIST="95.85.245.139" NONINTERACTIVE=1 ./relabel.sh all-with-accelerator --no-mask
+```
+
+По ходу спросит:
+
+- **bootstrap**: имя узла, порт SSH, открытый SSH-ключ, zsh и IPv6.
+  Порт SSH потом сам уйдёт в firewall;
+- **selfsteal**: домен заглушки;
+- **mobile443**: какие листы включить и на каких портах (Enter — значения по умолчанию).
+
+> ⚠️ `TCP_PORTS`/`UDP_PORTS` — **все** порты, на которых нода принимает
+> клиентов (посмотреть: `ss -tulnp`). Если их несколько, пишите через запятую,
+> например `TCP_PORTS="443,8443"`. Остальные порты firewall закроет.
+> Пока идёт установка, не закрывайте SSH-сессию. Когда bootstrap сменит порт,
+> проверьте вход во втором окне: `ssh -p <порт> root@<IP>`.
+
+После завершения нужна перезагрузка (ядро XanMod):
+
+```bash
+reboot
+```
+
+После перезагрузки проверьте, что `uname -r` содержит `xanmod` и нода **онлайн в панели**.
+
+---
+
 > ## Что в репозитории и что ставит (тезисно)
 >
 > Один репозиторий + команда `relabel` для подготовки VPN-ноды Remnawave.
