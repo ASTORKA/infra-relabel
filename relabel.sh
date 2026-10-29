@@ -839,6 +839,33 @@ cmd_mobile443() {
   fi
 }
 
+# Блокировка подсетей сканеров на весь сервер (ipset + iptables): гос-сети,
+# антисканеры, skipa + свои списки, статистика, меню `ipfilter`, ежедневное
+# обновление листов. Вендорен из Flecksis/rkn-guard (MIT) под нейтральным
+# именем sys-ipfilter; бинарник собран из исходников в ipfilter/bin/, листы —
+# через GH_PROXY. Выключенный UFW НЕ включает (порты ноды не закроются).
+# В all-with-accelerator не входит (пересекается с mobile443) — ставится отдельно.
+cmd_ipfilter() {
+  local m="$SCRIPT_DIR/ipfilter/install.sh"
+  if [ ! -f "$m" ]; then c_yel "· ipfilter не найден ($m) — пропуск"; return 0; fi
+  if [ "$DRY_RUN" = 1 ]; then
+    if command -v sys-ipfilter >/dev/null 2>&1; then
+      c_grn "· sys-ipfilter уже стоит → обновить листы"; c_dim "  [dry] bash $m update"
+    else
+      c_grn "· установить sys-ipfilter (ipset+iptables, листы gov/antiscanner/skipa)"; c_dim "  [dry] IPF_SCHEDULE=${IPF_SCHEDULE:-y} bash $m install"
+    fi
+    return 0
+  fi
+  if [ "${EUID:-$(id -u)}" -ne 0 ]; then c_yel "· ipfilter требует root — пропуск"; return 0; fi
+  if command -v sys-ipfilter >/dev/null 2>&1; then
+    c_grn "· sys-ipfilter уже установлен — обновляю листы…"
+    bash "$m" update
+  else
+    c_grn "· установка sys-ipfilter (листы обновляются ежедневно в 06:00; IPF_SCHEDULE=n — без расписания)…"
+    IPF_SCHEDULE="${IPF_SCHEDULE:-y}" bash "$m" install
+  fi
+}
+
 # Маскировка + ускорение/защита ноды (accelerator) одной командой. Нужен root.
 # Порты firewall: protect спросит интерактивно, либо задайте через ENV
 # (TCP_PORTS/UDP_PORTS/SSH_PORT/WHITELIST + NONINTERACTIVE=1) ДО запуска.
@@ -965,6 +992,7 @@ relabel.sh — маскировка имён docker-контейнеров VPN-�
   relabel selfsteal [--dry-run] установить selfsteal-сайт (если ещё не стоит)
   relabel sysmgr [--dry-run]   установить управляющий фреймворк sysmgr (root)
   relabel mobile443 [--dry-run] фильтр портов: дроп blocklist'ов, block-only (root)
+  relabel ipfilter [--dry-run]  блок подсетей сканеров на весь сервер, меню `ipfilter` (root)
   relabel ps                   показать процессы внутри контейнеров
 
 ОТКАТ ПО ШАГАМ:  restore / images-restore / project-restore /
@@ -1007,6 +1035,7 @@ case "${1:-}" in
   selfsteal)         cmd_selfsteal ;;
   sysmgr)            cmd_sysmgr ;;
   mobile443)         cmd_mobile443 ;;
+  ipfilter)          cmd_ipfilter ;;
   ps)                cmd_ps ;;
   ""|-h|--help|help) usage ;;
   *) die "неизвестная команда: $1 (см. --help)" ;;

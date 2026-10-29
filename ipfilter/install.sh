@@ -1,0 +1,666 @@
+#!/bin/bash
+set -u
+
+# --- ЦВЕТА ---
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
+
+# infra-relabel: всё ставится из вендоренной копии (каталог ipfilter/ репозитория),
+# с GitHub качаются только списки подсетей — через GH_PROXY (обход DPI).
+# Каталог исходников запоминаем при установке: менеджер копируется в /opt.
+SRC_FILE="/etc/sys-ipfilter.src"
+if [[ -f "$(dirname "${BASH_SOURCE[0]:-$0}")/install-binary.sh" ]]; then
+    IPF_SRC="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+else
+    IPF_SRC="$(cat "$SRC_FILE" 2>/dev/null)"
+fi
+GH_PROXY="${GH_PROXY-https://gh-proxy.com/}"
+MANAGER_PATH="/opt/sys-ipfilter-manager.sh"
+MENU_COMMAND="/usr/local/bin/ipfilter"
+LIST_GOV="${GH_PROXY}https://raw.githubusercontent.com/shadow-netlab/traffic-guard-lists/refs/heads/main/public/government_networks.list"
+LIST_SCAN="${GH_PROXY}https://raw.githubusercontent.com/shadow-netlab/traffic-guard-lists/refs/heads/main/public/antiscanner.list"
+LIST_SKIPA="${GH_PROXY}https://raw.githubusercontent.com/shadow-netlab/traffic-guard-lists/refs/heads/main/public/skipa.list"
+MANUAL_FILE="/opt/sys-ipfilter-manual.list"
+CURRENT_VERSION="не установлена"
+CURRENT_BRANCH="неизвестна"
+LATEST_VERSION=""
+UPDATE_STATUS="ещё не проверено"
+LAST_UPDATE_CHECK=-600
+SCHEDULE_CONFIG="/etc/sys-ipfilter-update.conf"
+SCHEDULE_UNIT_DIR="/etc/systemd/system"
+SCHEDULE_LOCK="/run/sys-ipfilter-schedule.lock"
+SCHEDULE_TIMER="sys-ipfilter-update.timer"
+SCHEDULE_SERVICE="sys-ipfilter-update.service"
+SOURCES_FILE="/var/lib/sys-ipfilter/sources.json"
+
+refresh_version_status() {
+    local info old_version payload current latest newest
+    CURRENT_VERSION="не установлена"
+    CURRENT_BRANCH="неизвестна"
+    if command -v sys-ipfilter >/dev/null 2>&1; then
+        if info=$(sys-ipfilter build-info 2>/dev/null); then
+            CURRENT_VERSION=$(printf '%s\n' "$info" | head -n 1)
+            CURRENT_BRANCH=$(printf '%s\n' "$info" | sed -n '2p')
+            [[ -z "$CURRENT_BRANCH" || "$CURRENT_BRANCH" == unknown ]] && CURRENT_BRANCH="неизвестна"
+        else
+            # Старые сборки ещё не знают команду build-info.
+            old_version=$(sys-ipfilter --version 2>/dev/null) || old_version=""
+            CURRENT_VERSION=${old_version##* }
+            [[ -z "$CURRENT_VERSION" ]] && CURRENT_VERSION="неизвестна"
+        fi
+    fi
+    # infra-relabel: самообновление выключено — версия только из вендоренной копии.
+    UPDATE_STATUS="вендорено в infra-relabel; обновление — git pull репозитория и пункт 6"
+}
+
+check_root() {
+    [[ $EUID -ne 0 ]] && { echo -e "${RED}Запуск только от root!${NC}"; exit 1; }
+}
+
+check_firewall_safety() {
+    echo -e "${BLUE}[CHECK] Проверка конфигурации Firewall...${NC}"
+    # infra-relabel: выключенный UFW не включаем — на VPN-ноде с запретом входящих
+    # по умолчанию это закрыло бы порты ноды. Без включённого UFW правила
+    # сохраняем через netfilter-persistent.
+    if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
+        return 0
+    fi
+    if ! dpkg -l | grep -q netfilter-persistent; then
+        DEBIAN_FRONTEND=noninteractive apt-get update -qq && \
+        DEBIAN_FRONTEND=noninteractive apt-get install -y iptables-persistent netfilter-persistent
+    fi
+}
+
+terminal_unavailable() {
+    printf 'Терминал недоступен, завершаю меню.\n' >&2
+    exit 1
+}
+
+read_cancellable_input() {
+    local previous_int_trap
+    previous_int_trap=$(trap -p INT)
+    # По Ctrl+C выходим из функции: continue в обработчике read может оставить
+    # Bash в ожидании ввода. При EOF и ошибке терминала завершаем меню.
+    trap 'trap - INT; eval "$previous_int_trap"; printf "\nОтмена.\n"; return 130' INT
+    read -r "$@" < /dev/tty || terminal_unavailable
+    trap - INT
+    eval "$previous_int_trap"
+}
+
+uninstall_process() {
+    echo -e "\n${RED}=== УДАЛЕНИЕ SYS-IPFILTER ===${NC}"
+    trap 'echo -e "\nОтмена."; return' INT
+    read -r -p "Вы уверены? (y/N): " confirm < /dev/tty || terminal_unavailable
+    trap 'exit 0' INT
+
+    [[ "$confirm" != "y" ]] && return
+
+    remove_update_schedule || return 1
+
+    # Используем встроенный uninstall sys-ipfilter (чистит UFW, ipset, iptables, systemd, rsyslog)
+    if command -v sys-ipfilter >/dev/null 2>&1; then
+        sys-ipfilter uninstall --yes || return 1
+    else
+        # Если бинарник уже удалён, убираем оставшиеся файлы и правила вручную.
+        systemctl stop antiscan-aggregate.timer antiscan-aggregate.service 2>/dev/null
+        systemctl disable antiscan-aggregate.timer antiscan-aggregate.service 2>/dev/null
+        rm -f /usr/local/bin/sys-ipfilter /usr/local/bin/antiscan-aggregate-logs.sh
+        rm -f /etc/systemd/system/antiscan-*
+        rm -f /etc/rsyslog.d/10-iptables-scanners.conf /etc/logrotate.d/iptables-scanners
+
+        iptables -D INPUT -j SCANNERS-BLOCK 2>/dev/null
+        iptables -F SCANNERS-BLOCK 2>/dev/null
+        iptables -X SCANNERS-BLOCK 2>/dev/null
+        ipset flush SCANNERS-BLOCK-V4 2>/dev/null
+        ipset destroy SCANNERS-BLOCK-V4 2>/dev/null
+        ipset flush SCANNERS-BLOCK-V6 2>/dev/null
+        ipset destroy SCANNERS-BLOCK-V6 2>/dev/null
+
+        # Чистим UFW (причина бага: правила оставались в before.rules)
+        sed -i '/SCANNERS-BLOCK/d' /etc/ufw/before.rules 2>/dev/null
+        sed -i '/SCANNERS-BLOCK/d' /etc/ufw/before6.rules 2>/dev/null
+        ufw reload 2>/dev/null
+    fi
+
+    # Удаляем команду меню и его сохранённый скрипт.
+    rm -f "$MENU_COMMAND" "$MANAGER_PATH" "$MANUAL_FILE"
+
+    systemctl restart rsyslog 2>/dev/null
+    echo -e "${GREEN}✅ Удалено.${NC}"
+    exit 0
+}
+
+# --- 🧪 УПРАВЛЕНИЕ IP ---
+manage_test_ip() {
+    # Создаем файл списка, если нет
+    touch "$MANUAL_FILE"
+    trap 'continue' INT
+
+    while true; do
+        clear
+        echo -e "${YELLOW}=== 🧪 УПРАВЛЕНИЕ IP ===${NC}"
+        echo -e " ${RED}1.${NC} ⛔ ЗАБАНИТЬ IP (Add)"
+        echo -e " ${GREEN}2.${NC} ✅ РАЗБАНИТЬ IP (Select from list)"
+        echo -e " ${CYAN}0.${NC} ↩️  Назад"
+        echo ""
+        echo -ne "${YELLOW}👉 Действие:${NC} "
+
+        read_cancellable_input action || continue
+
+        case $action in
+            1)
+                echo -e "\nВведите IP для БЛОКИРОВКИ ${YELLOW}(Ctrl+C = Отмена)${NC}:"
+                read_cancellable_input -p "IP: " ip || continue
+                [[ -z "$ip" ]] && continue
+
+                OUTPUT=$(ipset add SCANNERS-BLOCK-V4 "$ip" 2>&1)
+                if [ $? -eq 0 ]; then
+                    echo -e "${GREEN}✅ IP $ip ЗАБЛОКИРОВАН!${NC}"
+                    # Добавляем в файл, если его там еще нет
+                    if ! grep -Fxq "$ip" "$MANUAL_FILE"; then
+                        echo "$ip" >> "$MANUAL_FILE"
+                    fi
+                else
+                    echo -e "${RED}❌ Ошибка:${NC} $OUTPUT"
+                fi
+                read_cancellable_input -p "[Enter]..." || continue
+                ;;
+            2)
+                echo -e "\n${GREEN}=== СПИСОК РУЧНЫХ БАНОВ ===${NC}"
+                if [ ! -s "$MANUAL_FILE" ]; then
+                    echo "Список пуст."
+                else
+                    # Читаем файл в массив
+                    mapfile -t MANUAL_IPS < "$MANUAL_FILE"
+                    i=1
+                    for ip in "${MANUAL_IPS[@]}"; do
+                        echo -e "${CYAN}$i)${NC} $ip"
+                        ((i++))
+                    done
+                fi
+
+                echo -e "\nВведите ${CYAN}НОМЕР${NC} из списка или ${CYAN}IP${NC} вручную:"
+                read_cancellable_input -p "Выбор: " input || continue
+                [[ -z "$input" ]] && continue
+
+                TARGET_IP=""
+
+                # Проверяем, число это или IP
+                if [[ "$input" =~ ^[0-9]+$ ]] && [ "$input" -le "${#MANUAL_IPS[@]}" ] && [ "$input" -gt 0 ]; then
+                    # Это номер из списка (массив начинается с 0, ввод с 1)
+                    INDEX=$((input-1))
+                    TARGET_IP="${MANUAL_IPS[$INDEX]}"
+                else
+                    # Это вероятно IP
+                    TARGET_IP="$input"
+                fi
+
+                echo -e "Разбаниваем: ${YELLOW}$TARGET_IP${NC}..."
+
+                OUTPUT=$(ipset del SCANNERS-BLOCK-V4 "$TARGET_IP" 2>&1)
+                # Удаляем из файла в любом случае
+                sed -i "/^$TARGET_IP$/d" "$MANUAL_FILE"
+
+                if [ $? -eq 0 ]; then
+                    echo -e "${GREEN}✅ Успешно разбанен!${NC}"
+                else
+                    echo -e "${RED}⚠️  Warning:${NC} $OUTPUT (Удален из списка)"
+                fi
+                read_cancellable_input -p "[Enter]..." || continue
+                ;;
+            0)
+                trap 'exit 0' INT
+                return
+                ;;
+            *) ;;
+        esac
+    done
+}
+
+update_lists() {
+    local result=0
+    echo -e "\n${CYAN}🔄 Обновление списков...${NC}"
+    sys-ipfilter update -u "$LIST_GOV" -u "$LIST_SCAN" -u "$LIST_SKIPA" \
+        --managed-lists --sources-file "$SOURCES_FILE" || result=$?
+    if (( result == 2 )); then
+        printf 'Обновление завершено с ошибками источников. Для них взяты последние корректные данные, если они есть; подробности выше.\n' >&2
+        return 2
+    elif (( result != 0 )); then
+        echo -e "${RED}❌ Обновление не выполнено. Проверьте сообщения об ошибках.${NC}" >&2
+        return 1
+    fi
+    echo -e "${GREEN}✅ Готово!${NC}"
+    sleep 2
+}
+
+source_command() {
+    sys-ipfilter sources --sources-file "$SOURCES_FILE" \
+        --base-url "$LIST_GOV" --base-url "$LIST_SCAN" --base-url "$LIST_SKIPA" "$@"
+}
+
+manage_extra_lists() {
+    local action value operation
+    while true; do
+        printf '\n=== Доп списки подсетей ===\n'
+        source_command list || { printf 'Не удалось прочитать настройки дополнительных списков.\n' >&2; return 1; }
+        printf '\nОсновные списки сохраняются в любом случае.\n'
+        printf 'Не рекомендуется\n'
+        printf '%s\n' '1. Добавить список по URL (сначала выключен)' '2. Включить список' \
+            '3. Отключить список' '4. Удалить список' '0. Назад'
+        read_cancellable_input -p 'Доп списки — выбор: ' action || continue
+        case "$action" in
+            1)
+                read_cancellable_input -p 'URL текстового списка CIDR: ' value || continue
+                source_command add "$value" || printf 'Не удалось добавить список; настройки остальных сохранены.\n' >&2
+                ;;
+            2|3|4)
+                read_cancellable_input -p 'Номер списка: ' value || continue
+                [[ "$value" =~ ^[1-9][0-9]{0,8}$ ]] || { printf 'Введите номер из списка.\n'; continue; }
+                case "$action" in 2) operation=enable ;; 3) operation=disable ;; 4) operation=remove ;; esac
+                if source_command "$operation" "$value"; then
+                    update_lists || printf 'Настройки сохранены. Проверьте сообщения выше; следующий запуск повторит обновление.\n' >&2
+                fi
+                ;;
+            0) return 0 ;;
+            *) printf 'Неверный пункт.\n' ;;
+        esac
+    done
+}
+
+# Настройки читаем как данные, не как команды. Режим local использует время сервера.
+normalize_schedule() {
+    local mode=$1 value=$2 item hour minute
+    local -a times=()
+    case "$mode" in
+        off) [[ -z "$value" ]] ;;
+        interval)
+            [[ "$value" =~ ^[0-9]{1,3}$ ]] || return 1
+            (( 10#$value >= 1 && 10#$value <= 168 )) || return 1
+            printf '%d' "$((10#$value))"
+            ;;
+        msk|local) [[ "$value" == 06:00 ]] && printf '06:00' ;;
+        hours)
+            [[ ${#value} -le 256 && "$value" =~ ^[0-9:,[:blank:]]+$ ]] || return 1
+            value=${value//[[:blank:]]/}
+            [[ -n "$value" && "$value" != ,* && "$value" != *, && "$value" != *,,* ]] || return 1
+            IFS=',' read -r -a times <<< "$value"
+            (( ${#times[@]} <= 24 )) || return 1
+            for item in "${times[@]}"; do
+                [[ "$item" =~ ^([0-9]{1,2})(:([0-9]{2}))?$ ]] || return 1
+                hour=${BASH_REMATCH[1]}
+                minute=${BASH_REMATCH[3]:-00}
+                (( 10#$hour <= 23 && 10#$minute <= 59 )) || return 1
+            done
+            for item in "${times[@]}"; do
+                hour=${item%%:*}
+                minute=00
+                [[ "$item" == *:* ]] && minute=${item#*:}
+                printf '%02d:%02d\n' "$((10#$hour))" "$((10#$minute))"
+            done | LC_ALL=C sort -u | paste -sd, - | tr -d '\n'
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+load_update_schedule() {
+    SCHEDULE_MODE=off SCHEDULE_VALUE=''
+    local -a lines=()
+    [[ -e "$SCHEDULE_CONFIG" ]] || return 0
+    mapfile -t lines < "$SCHEDULE_CONFIG" || return 1
+    [[ ${#lines[@]} == 1 && "${lines[0]}" == *=* ]] || return 1
+    SCHEDULE_MODE=${lines[0]%%=*}
+    SCHEDULE_VALUE=$(normalize_schedule "$SCHEDULE_MODE" "${lines[0]#*=}") || return 1
+}
+
+show_update_schedule() {
+    if ! load_update_schedule; then
+        printf 'Автообновление: ошибка чтения настроек; выберите расписание заново.\n'
+        return
+    fi
+    printf 'Автообновление: '
+    case "$SCHEDULE_MODE" in
+        off) printf 'выключено' ;;
+        interval) printf 'каждые %s ч.' "$SCHEDULE_VALUE" ;;
+        hours) printf 'ежедневно в %s (МСК)' "$SCHEDULE_VALUE" ;;
+        msk) printf 'ежедневно в 06:00 (МСК)' ;;
+        local) printf 'ежедневно в 06:00 (локальное время сервера)' ;;
+    esac
+    if systemctl is-active --quiet "$SCHEDULE_TIMER" 2>/dev/null; then
+        if [[ "$SCHEDULE_MODE" == off ]]; then
+            printf ' — внимание: таймер всё ещё активен'
+        elif systemctl is-enabled --quiet "$SCHEDULE_TIMER" 2>/dev/null; then
+            printf ' — активно'
+        else
+            printf ' — активно только до перезагрузки'
+        fi
+    elif [[ "$SCHEDULE_MODE" != off ]]; then
+        printf ' — таймер не активен'
+    fi
+    printf '\n'
+}
+
+write_update_units() {
+    local mode=$1 value=$2 directory=$3 time
+    local -a times=()
+    cat > "$directory/$SCHEDULE_SERVICE" <<EOF || return 1
+[Unit]
+Description=sys-ipfilter subnet list update
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/bin/bash $MANAGER_PATH update
+StandardInput=null
+StandardOutput=journal
+StandardError=journal
+EOF
+    {
+        printf '[Unit]\nDescription=sys-ipfilter subnet update schedule\n\n[Timer]\n'
+        if [[ "$mode" == interval ]]; then
+            printf 'OnActiveSec=%sh\nOnUnitActiveSec=%sh\n' "$value" "$value"
+        else
+            IFS=',' read -r -a times <<< "$value"
+            for time in "${times[@]}"; do
+                if [[ "$mode" == local ]]; then
+                    printf 'OnCalendar=*-*-* %s:00\n' "$time"
+                else
+                    printf 'OnCalendar=*-*-* %s:00 Europe/Moscow\n' "$time"
+                fi
+            done
+            # После загрузки однократно выполняем пропущенное календарное задание.
+            printf 'Persistent=true\n'
+        fi
+        printf 'AccuracySec=1s\nUnit=%s\n\n[Install]\nWantedBy=timers.target\n' "$SCHEDULE_SERVICE"
+    } > "$directory/$SCHEDULE_TIMER"
+}
+
+restore_update_schedule() {
+    local work=$1 enabled=$2 active=$3 file result=0
+    if [[ -f "$SCHEDULE_UNIT_DIR/$SCHEDULE_TIMER" ]]; then
+        systemctl disable --now "$SCHEDULE_TIMER" || result=1
+    fi
+    for file in "$SCHEDULE_SERVICE" "$SCHEDULE_TIMER"; do
+        if [[ -f "$work/old/$file" ]]; then
+            cp -p -- "$work/old/$file" "$SCHEDULE_UNIT_DIR/$file" || result=1
+        else
+            rm -f -- "$SCHEDULE_UNIT_DIR/$file" || result=1
+        fi
+    done
+    if [[ -f "$work/old/config" ]]; then
+        cp -p -- "$work/old/config" "$SCHEDULE_CONFIG" || result=1
+    else
+        rm -f -- "$SCHEDULE_CONFIG" || result=1
+    fi
+    systemctl daemon-reload || result=1
+    if [[ "$enabled" == yes ]]; then systemctl enable "$SCHEDULE_TIMER" || result=1; fi
+    if [[ "$active" == yes ]]; then systemctl start "$SCHEDULE_TIMER" || result=1; fi
+    (( result == 0 )) || printf 'Не удалось полностью восстановить прежнее расписание. Проверьте systemctl status %s.\n' "$SCHEDULE_TIMER" >&2
+    return "$result"
+}
+
+set_update_schedule() (
+    local mode=$1 value=$2 work file enabled=no active=no pending=no schedule_fd
+    value=$(normalize_schedule "$mode" "$value") || {
+        printf 'Неверное расписание: интервал 1–168 ч.; до 24 значений 0–23 или ЧЧ:ММ через запятую.\n' >&2
+        return 1
+    }
+    command -v flock >/dev/null && command -v systemctl >/dev/null || {
+        printf 'Для автообновления нужны systemd и flock (util-linux).\n' >&2
+        return 1
+    }
+    [[ "$mode" == off || -f "$MANAGER_PATH" ]] || {
+        printf 'Сначала установите меню в %s.\n' "$MANAGER_PATH" >&2
+        return 1
+    }
+    # Эта блокировка защищает только настройки. Для update/full/uninstall сам
+    # sys-ipfilter использует /run/sys-ipfilter.lock; повторно захватывать её нельзя.
+    exec {schedule_fd}> "$SCHEDULE_LOCK" || return 1
+    flock -n "$schedule_fd" || { printf 'Расписание уже изменяется другим процессом.\n' >&2; return 1; }
+    umask 077
+    work=$(mktemp -d "$SCHEDULE_UNIT_DIR/.ipfilter-update.XXXXXX") || return 1
+    trap '[[ "$pending" == no ]] || restore_update_schedule "$work" "$enabled" "$active"; rm -rf -- "$work"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 1' TERM HUP
+    mkdir "$work/old" || return 1
+    for file in "$SCHEDULE_SERVICE" "$SCHEDULE_TIMER"; do
+        if [[ -e "$SCHEDULE_UNIT_DIR/$file" ]]; then
+            cp -p -- "$SCHEDULE_UNIT_DIR/$file" "$work/old/$file" || return 1
+        fi
+    done
+    if [[ -e "$SCHEDULE_CONFIG" ]]; then cp -p -- "$SCHEDULE_CONFIG" "$work/old/config" || return 1; fi
+    systemctl is-enabled --quiet "$SCHEDULE_TIMER" 2>/dev/null && enabled=yes
+    systemctl is-active --quiet "$SCHEDULE_TIMER" 2>/dev/null && active=yes
+    printf '%s=%s\n' "$mode" "$value" > "$work/config" || return 1
+    if [[ "$mode" != off ]]; then
+        write_update_units "$mode" "$value" "$work" || return 1
+        # Повторное сохранение настроек не должно откладывать запуск по интервалу.
+        if [[ "$enabled" == yes && "$active" == yes ]] &&
+            cmp -s "$work/config" "$SCHEDULE_CONFIG" &&
+            cmp -s "$work/$SCHEDULE_TIMER" "$SCHEDULE_UNIT_DIR/$SCHEDULE_TIMER" &&
+            cmp -s "$work/$SCHEDULE_SERVICE" "$SCHEDULE_UNIT_DIR/$SCHEDULE_SERVICE"; then
+            printf 'Это расписание уже включено.\n'
+            return 0
+        fi
+    fi
+    pending=yes
+    if [[ -f "$SCHEDULE_UNIT_DIR/$SCHEDULE_TIMER" || "$active" == yes || "$enabled" == yes ]]; then
+        systemctl disable --now "$SCHEDULE_TIMER" || return 1
+    fi
+    # Остановка таймера не прерывает уже начавшееся обновление.
+    if [[ "$mode" != off ]]; then
+        for file in "$SCHEDULE_SERVICE" "$SCHEDULE_TIMER"; do
+            chmod 644 "$work/$file" && mv -f -- "$work/$file" "$SCHEDULE_UNIT_DIR/$file" || return 1
+        done
+        systemctl daemon-reload && systemctl enable "$SCHEDULE_TIMER" &&
+            systemctl start "$SCHEDULE_TIMER" || return 1
+    fi
+    mv -f -- "$work/config" "$SCHEDULE_CONFIG" || return 1
+    pending=no
+    printf 'Расписание сохранено.\n'
+)
+
+remove_update_schedule() {
+    [[ -e "$SCHEDULE_CONFIG" || -e "$SCHEDULE_UNIT_DIR/$SCHEDULE_TIMER" ]] || return 0
+    set_update_schedule off '' || return 1
+    rm -f -- "$SCHEDULE_CONFIG" "$SCHEDULE_UNIT_DIR/$SCHEDULE_TIMER" "$SCHEDULE_UNIT_DIR/$SCHEDULE_SERVICE" || return 1
+    systemctl daemon-reload
+}
+
+manage_updates() {
+    local action value
+    while true; do
+        printf '\n=== ОБНОВЛЕНИЕ ПОДСЕТЕЙ ===\n'
+        show_update_schedule
+        printf '%s\n' '1. Обновить сейчас' '2. Каждые N часов' \
+            '3. В заданное время по списку (МСК)' '4. Ежедневно в 06:00 (МСК)' \
+            '5. Отключить автообновление' '0. Назад'
+        read_cancellable_input -p 'Обновления — выбор: ' action || continue
+        case "$action" in
+            1) update_lists ;;
+            2)
+                read_cancellable_input -p 'Интервал в часах (1–168): ' value || continue
+                set_update_schedule interval "$value" || printf 'Не удалось применить расписание; подробности выше.\n' >&2
+                ;;
+            3)
+                read_cancellable_input -p 'Время МСК через запятую (6,12,18 или 06:00,18:30): ' value || continue
+                set_update_schedule hours "$value" || printf 'Не удалось применить расписание; подробности выше.\n' >&2
+                ;;
+            4) set_update_schedule msk 06:00 || printf 'Не удалось включить расписание.\n' >&2 ;;
+            5) set_update_schedule off '' || printf 'Не удалось отключить расписание.\n' >&2 ;;
+            0) return ;;
+            *) printf 'Неверный пункт.\n' ;;
+        esac
+    done
+}
+
+install_menu_command() {
+    [[ -n "$IPF_SRC" && -f "$IPF_SRC/install.sh" ]] || { echo -e "${RED}Не найден каталог ipfilter/ (infra-relabel)${NC}"; return 1; }
+    printf '%s\n' "$IPF_SRC" > "$SRC_FILE"
+    install -m 755 "$IPF_SRC/install.sh" "$MANAGER_PATH"
+    printf '%s\n' '#!/usr/bin/env bash' "exec $MANAGER_PATH \"\$@\"" > "$MENU_COMMAND"
+    chmod 755 "$MENU_COMMAND"
+}
+
+update_application() {
+    echo -e "\n${CYAN}⬆️  Обновление sys-ipfilter и меню...${NC}"
+
+    # Обновляем только бинарник и файлы меню. Не вызываем `full`, поэтому
+    # цепочки iptables и их счётчики заблокированных атак не сбрасываются.
+    bash "$IPF_SRC/install-binary.sh" || return 1
+
+    install_menu_command
+    # Новые версии также обновляют сборщик без повторного применения правил firewall.
+    if sys-ipfilter --help | grep -q 'setup-logging'; then
+        command -v python3 >/dev/null || apt-get install -y python3 || return 1
+        sys-ipfilter setup-logging || return 1
+    fi
+    echo -e "${GREEN}✅ sys-ipfilter и меню обновлены. Счётчики атак сохранены.${NC}"
+    sleep 2
+}
+
+install_process() {
+    trap 'exit 1' INT
+    clear
+    echo -e "${CYAN}🚀 УСТАНОВКА SYS-IPFILTER${NC}"
+    check_firewall_safety
+
+    echo -e "\n${BLUE}[INFO] Установка...${NC}"
+    apt-get update
+    apt-get install -y curl wget rsyslog ipset grep sed coreutils whois util-linux tzdata python3
+    systemctl enable --now rsyslog
+
+    bash "$IPF_SRC/install-binary.sh" || exit 1
+
+    install_menu_command
+
+    echo -e "\n${BLUE}[INFO] Настройка правил...${NC}"
+    sys-ipfilter full -u "$LIST_GOV" -u "$LIST_SCAN" -u "$LIST_SKIPA" --enable-logging \
+        --managed-lists --sources-file "$SOURCES_FILE"
+
+    if [ $? -ne 0 ]; then
+        echo -e "\n${RED}❌ ОШИБКА УСТАНОВКИ!${NC}"
+        exit 1
+    fi
+
+    mkdir -p /var/log
+    touch /var/log/iptables-scanners-{ipv4,ipv6}.log
+    LOG_GROUP="syslog"; getent group adm >/dev/null && LOG_GROUP="adm"
+    chown syslog:$LOG_GROUP /var/log/iptables-scanners-*.log
+    chmod 640 /var/log/iptables-scanners-*.log
+
+    # Создаем файл для ручных банов, если нет
+    touch "$MANUAL_FILE"
+
+    systemctl restart rsyslog
+    systemctl restart antiscan-aggregate.service 2>/dev/null || true
+    systemctl restart antiscan-aggregate.timer
+
+    offer_install_schedule || return 1
+
+    echo -e "\n${GREEN}✅ Установка завершена!${NC}"
+    sleep 2
+}
+
+offer_install_schedule() {
+    local answer
+    # relabel ipfilter: IPF_SCHEDULE=y — включить ежедневное обновление без вопроса.
+    case "${IPF_SCHEDULE:-}" in
+        y|Y|yes) set_update_schedule local 06:00; return $? ;;
+        n|N|no) return 0 ;;
+    esac
+    while true; do
+        read_cancellable_input -p 'Включить автообновление подсетей ежедневно в 06:00 по локальному времени сервера? [y/N]: ' answer || return 0
+        case "$answer" in
+            y|Y) set_update_schedule local 06:00; return $? ;;
+            n|N|'') printf 'Автообновление не включалось; прежнее расписание, если было, сохранено.\n'; return 0 ;;
+            *) printf 'Введите y или n (Enter — нет).\n' ;;
+        esac
+    done
+}
+
+show_attack_stats() {
+    printf '\n%s\n' '=== ТОП АТАК: ВСЕ АДРЕСА ==='
+    sys-ipfilter stats || {
+        printf 'Не удалось обновить статистику. Проверьте python3 и журнал antiscan-aggregate.service.\n' >&2
+        return 1
+    }
+}
+
+view_log() {
+    local file=$1
+    echo -e "\n${YELLOW}=== LIVE LOG (Ctrl+C для возврата) ===${NC}"
+    trap ':' INT
+    tail -f "$file"
+    trap 'exit 0' INT
+}
+
+show_menu() {
+    trap 'exit 0' INT
+    while true; do
+        clear
+        refresh_version_status
+        IPSET_CNT=$(ipset list SCANNERS-BLOCK-V4 2>/dev/null | grep "Number of entries" | awk '{print $4}')
+        [[ -z "$IPSET_CNT" ]] && IPSET_CNT="0"
+        PKTS_CNT=$(iptables -vnL SCANNERS-BLOCK 2>/dev/null | grep "LOG" | awk '{print $1}')
+        [[ -z "$PKTS_CNT" ]] && PKTS_CNT="0"
+
+        echo -e "${CYAN}╔══════════════════════════════════════════════════════╗${NC}"
+        echo -e "${CYAN}║               💜 SYS-IPFILTER MANAGER 💜                ║${NC}"
+        echo -e "${CYAN}║                   vendored · infra-relabel           ║${NC}"
+        echo -e "${CYAN}╠══════════════════════════════════════════════════════╣${NC}"
+        printf "${CYAN}║${NC}  📊 Подсетей:       ${GREEN}%-33s${NC}${CYAN}║${NC}\n" "$IPSET_CNT"
+        printf "${CYAN}║${NC}  🔥 Атак отбито:    ${RED}%-33s${NC}${CYAN}║${NC}\n" "$PKTS_CNT"
+        echo -e "${CYAN}╚══════════════════════════════════════════════════════╝${NC}"
+        echo -e "  ${DIM}└─${NC} ${BOLD}${GREEN}◆ ${CURRENT_VERSION}${NC} ${DIM}·${NC} ${YELLOW}${CURRENT_BRANCH}${NC} ${DIM}· ${UPDATE_STATUS}${NC}"
+        echo ""
+        echo -e " ${GREEN}1.${NC} 📈 Топ атак (CSV)"
+        echo -e " ${GREEN}2.${NC} 🕵 Логи IPv4 (Live)"
+        echo -e " ${GREEN}3.${NC} 🕵 Логи IPv6 (Live)"
+        echo -e " ${GREEN}4.${NC} 🧪 Управление IP (Ban/Unban)"
+        echo -e " ${GREEN}5.${NC} 🔄 Обновление списков и расписание"
+        echo -e " ${GREEN}6.${NC} ⬆️  Обновить sys-ipfilter"
+        echo -e " ${GREEN}7.${NC} 🛠️  Переустановить (Reinstall)"
+        echo -e " ${RED}8.${NC} 🗑️  Удалить (Uninstall)"
+        echo -e " ${GREEN}9.${NC}📡  Доп списки подсетей"
+        echo -e " ${RED}0.${NC} ❌ Выход"
+        echo ""
+
+        echo -ne "${CYAN}👉 Ваш выбор:${NC} "
+        read -r choice < /dev/tty || terminal_unavailable
+
+        case $choice in
+            1)
+                show_attack_stats
+                read -r -p $'\n[Enter] назад...' < /dev/tty || terminal_unavailable
+                ;;
+            2) view_log "/var/log/iptables-scanners-ipv4.log" ;;
+            3) view_log "/var/log/iptables-scanners-ipv6.log" ;;
+            4) manage_test_ip ;;
+            5) manage_updates ;;
+            6)
+                update_application
+                ;;
+            7)
+                install_process
+                ;;
+            8) uninstall_process ;;
+            9) manage_extra_lists ;;
+            0) exit 0 ;;
+            *) echo "Неверно"; sleep 1 ;;
+        esac
+    done
+}
+
+# При передаче скрипта через конвейер в bash переменная BASH_SOURCE[0] не задана.
+if [[ "${BASH_SOURCE[0]:-$0}" != "$0" ]]; then
+    return 0
+fi
+check_root
+case "${1:-}" in
+    install) install_process ;;
+    monitor) show_menu ;;
+    update) update_lists ;;
+    uninstall) uninstall_process ;;
+    *) show_menu ;;
+esac
