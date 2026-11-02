@@ -41,6 +41,8 @@ DRY_RUN=0   # 1 — только показывать команды, ничег
 NO_MASK=0   # 1 — ставить сервисы, но НЕ переименовывать (для all-with-accelerator)
 NO_SELFSTEAL=0  # 1 — не ставить selfsteal-заглушку (для all-with-accelerator)
 NO_BLOCK=0  # 1 — НЕ ставить блокировщики трафика: protect (firewall) и mobile443
+NO_ANTISCAN=0  # 1 — firewall ставить, но без антисканеров на сервисных портах:
+               #     без mobile443, portscan-автобана и CrowdSec
 
 # Прокси-префикс для обхода DPI-блокировок GitHub (raw/api/codeload/git clone).
 # По умолчанию https://gh-proxy.com/ ; переопределяется через ENV; пусто = напрямую.
@@ -894,8 +896,15 @@ cmd_all_with_accel() {
     echo; c_yel "════ блокировщики ПРОПУЩЕНЫ (--no-block): protect и mobile443 не ставлю ════"
   else
     echo; c_grn "════ защита ноды (accelerator → protect) ════"
-    run bash "$acc" protect
-    echo; c_grn "════ фильтр портов (mobile443 block-only) ════"; cmd_mobile443
+    if [ "$NO_ANTISCAN" = 1 ]; then
+      # Автобан и CrowdSec режут IP целиком, в т.ч. на 443 — выключаем вместе с mobile443.
+      c_yel "  --no-antiscan: без portscan-автобана и CrowdSec"
+      ENABLE_PORTSCAN_BAN=0 ENABLE_CROWDSEC=0 run bash "$acc" protect
+      echo; c_yel "════ mobile443 ПРОПУЩЕН (--no-antiscan): антисканеры на порты не вешаю ════"
+    else
+      run bash "$acc" protect
+      echo; c_grn "════ фильтр портов (mobile443 block-only) ════"; cmd_mobile443
+    fi
   fi
   echo; c_grn "════ диагностика (read-only) ════"
   run bash "$acc" diagnose
@@ -905,7 +914,9 @@ cmd_all_with_accel() {
     local _ss _mask _block
     [ "$NO_SELFSTEAL" = 1 ] && _ss="" || _ss="selfsteal + "
     [ "$NO_MASK" = 1 ] && _mask="" || _mask="маскировка + "
-    [ "$NO_BLOCK" = 1 ] && _block="" || _block="защита + mobile443 + "
+    if [ "$NO_BLOCK" = 1 ]; then _block=""
+    elif [ "$NO_ANTISCAN" = 1 ]; then _block="защита (без антисканеров) + "
+    else _block="защита + mobile443 + "; fi
     c_grn "Готово: ${_ss}${_mask}ускорение + ${_block}sysmgr."
     c_yel "Если optimize ставил XanMod — нужен reboot (uname -r должен содержать xanmod)."
     c_dim "Управление: команда 'sysmgr' (TUI)."
@@ -975,10 +986,11 @@ relabel.sh — маскировка имён docker-контейнеров VPN-�
 
 ОДНОЙ КОМАНДОЙ:
   relabel all [--dry-run]      применить ВСЁ маскирование (A→B→C→D)
-  relabel all-with-accelerator [--dry-run] [--no-mask] [--no-selfsteal] [--no-block]  (root!)
+  relabel all-with-accelerator [--dry-run] [--no-mask] [--no-selfsteal] [--no-block] [--no-antiscan]  (root!)
                                selfsteal+маскирование+optimize+protect+mobile443+sysmgr
                                --no-mask: не переименовывать; --no-selfsteal: не ставить заглушку
                                --no-block: без блокировщиков (protect + mobile443)
+                               --no-antiscan: protect без portscan-бана и CrowdSec, без mobile443
   relabel restore-all [--dry-run]  откатить ВСЁ маскирование
   relabel uninstall [--dry-run]    ПОЛНОЕ удаление: откат всего + снять сервисы и команду
 
@@ -1014,6 +1026,7 @@ for _a in "$@"; do
     --no-mask) NO_MASK=1 ;;
     --no-selfsteal) NO_SELFSTEAL=1 ;;
     --no-block|--no-firewall) NO_BLOCK=1 ;;
+    --no-antiscan) NO_ANTISCAN=1 ;;
   esac
 done
 case "${1:-}" in

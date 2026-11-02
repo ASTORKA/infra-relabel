@@ -250,6 +250,25 @@ cd /opt/infra-relabel && ./relabel.sh all-with-accelerator --dry-run --no-block 
 переименований), `--no-selfsteal` (без заглушки). Например, только ускорение +
 блокировщики без заглушки и без переименований — `--no-mask --no-selfsteal`.
 
+## Порт ноды 2222 только для панели, на 443 без антисканеров (`--no-antiscan`)
+
+Firewall ставится, но:
+
+- **2222** (порт node-agent) — `drop` всем, кроме адресов из `WHITELIST`
+  (при заданном `WHITELIST` это включается само: `NODE_PORT_WHITELIST_ONLY=auto`);
+- **443** — без антисканеров: не ставится `mobile443`, выключены portscan-автобан
+  и CrowdSec (они банят IP целиком, т.е. и на 443). Остаются только per-IP
+  лимиты от флуда (`CONN_LIMIT=2048`, `SYN_RATE=200/с`).
+
+```bash
+SSH_PORT=22 TCP_PORTS=443 UDP_PORTS=443 NODE_PORT=2222 \
+WHITELIST="95.85.245.139,93.123.85.3" NONINTERACTIVE=1 \
+  relabel all-with-accelerator --no-mask --no-antiscan
+```
+
+> IP, с которого ты сейчас зашёл по SSH, тоже попадает в whitelist (защита от
+> самоблокировки) — с него 2222 тоже будет открыт.
+
 ## Быстрый старт — только маскировка
 
 ```bash
@@ -310,7 +329,7 @@ relabel uninstall               # снести всё, что ставил ре�
 | `relabel mobile443` | block-only фильтр портов (дроп blocklist'ов, root) |
 | `relabel ps` | показать процессы внутри контейнеров |
 | `relabel all` | вся маскировка сразу (A→B→C→D) |
-| `relabel all-with-accelerator` | selfsteal + маскировка + `optimize` + `protect` + `mobile443` + `sysmgr` (root). Флаги: `--no-mask` (без переименований), `--no-selfsteal` (без заглушки), `--no-block` (без блокировщиков `protect`/`mobile443`) |
+| `relabel all-with-accelerator` | selfsteal + маскировка + `optimize` + `protect` + `mobile443` + `sysmgr` (root). Флаги: `--no-mask` (без переименований), `--no-selfsteal` (без заглушки), `--no-block` (без блокировщиков `protect`/`mobile443`), `--no-antiscan` (`protect` без portscan-бана и CrowdSec, без `mobile443`) |
 | `relabel uninstall` | ПОЛНОЕ удаление: снять все сервисы + откат маскировки + команду (root) |
 
 Откат по шагам: `restore`, `images-restore`, `project-restore`,
