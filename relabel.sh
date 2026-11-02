@@ -887,12 +887,17 @@ cmd_ipsni() {
   fi
   [ "$DRY_RUN" = 1 ] && return 0
 
-  echo; c_grn "════ проверка: TLS на 443 без SNI (как увидит пробник) ════"
+  # Не 127.0.0.1: заглушка может слушать 127.0.0.1:443 сама, и проверка прошла бы
+  # мимо Xray. Внешний адрес ноды попадает в *:443 — то есть в Reality, как у пробника.
+  local lip
+  lip="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i = 1; i < NF; i++) if ($i == "src") { print $(i + 1); exit }}')"
+  [ -n "$lip" ] || die "не определил внешний IPv4 ноды (ip route get)"
+  echo; c_grn "════ проверка: TLS на $lip:443 без SNI (как увидит пробник) ════"
   local out subj vr code
-  out="$(timeout 10 openssl s_client -connect 127.0.0.1:443 -noservername </dev/null 2>&1 || true)"
+  out="$(timeout 10 openssl s_client -connect "$lip:443" -noservername </dev/null 2>&1 || true)"
   subj="$(printf '%s\n' "$out" | grep -m1 '^subject=' || true)"
   vr="$(printf '%s\n' "$out" | grep -m1 'Verify return code' || true)"
-  code="$(curl -sk --max-time 10 -o /dev/null -w '%{http_code}' https://127.0.0.1/ || true)"
+  code="$(curl -sk --max-time 10 -o /dev/null -w '%{http_code}' "https://$lip/" || true)"
   echo "  сертификат: ${subj:-нет ответа}"
   echo "  ${vr:-Verify: нет ответа}"
   echo "  HTTP по IP: ${code:-нет ответа}"
@@ -909,7 +914,7 @@ cmd_ipsni() {
 1) Профиль конфига, Reality-инбаунд на 443:
      serverNames: ["<твой домен>", ""]   — пустая строка ВТОРОЙ: без неё клиент без SNI уйдёт в заглушку
      shortIds: первым настоящий shortId (не "")
-     target: заглушка selfsteal (как сейчас), не чужой сайт
+     target: заглушка selfsteal (как сейчас; 127.0.0.1:443 — нормально, если там она), не чужой сайт
 2) Новый хост на этот инбаунд:
      Address: $ip   Port: 443   SNI: $ip   Fingerprint: firefox   ALPN: пусто
      Final Mask: {"tcp":[{"type":"fragment","settings":{"lengths":["10-20"],"delays":["0"],"packets":"tlshello"}}]}

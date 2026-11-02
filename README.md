@@ -285,9 +285,9 @@ WHITELIST="95.85.245.139,93.123.85.3" NONINTERACTIVE=1 \
 cd /opt/infra-relabel && git pull && ./install.sh && relabel ipsni
 ```
 
-Проверка внутри: `openssl s_client -connect 127.0.0.1:443 -noservername` (через Xray →
+Проверка внутри: `openssl s_client -connect <IP ноды>:443 -noservername` (через Xray →
 Reality → заглушку) должен дать сертификат домена с `Verify return code: 0`, а
-`curl -k https://127.0.0.1/` — `200`.
+`curl -k https://<IP ноды>/` — `200`.
 
 В панели (команда выводит то же с IP ноды):
 
