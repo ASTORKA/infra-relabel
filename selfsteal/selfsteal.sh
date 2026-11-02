@@ -1989,6 +1989,9 @@ EOF
 		}
 	}
 	auto_https disable_redirects
+	# Reality без SNI (IP в serverName клиента): ClientHello приходит без имени —
+	# отдаём сертификат своего домена, а не самоподписанный из catch-all ниже.
+	default_sni {$SELF_STEAL_DOMAIN}
 	# Disable the admin API (:2019). We never use `caddy reload`/admin here
 	# (Caddy is managed via docker compose), and its default bind resolves the
 	# hostname "localhost" — which fails under network_mode: host when the
@@ -2042,8 +2045,14 @@ https://{$SELF_STEAL_DOMAIN} {
 }
 
 :{$SELF_STEAL_PORT} {
+	# Сюда попадают запросы с Host: IP (проба без SNI) и чужими именами —
+	# отдаём тот же сайт, а не пустой 204: «сайт по IP» выглядит обычно.
 	tls internal
-	respond 204
+	encode gzip
+	header -Server
+	root * /var/www/html
+	try_files {path} /index.html
+	file_server
 	log off
 }
 
@@ -2070,6 +2079,9 @@ EOF
 		}
 	}
 	auto_https disable_redirects
+	# Reality без SNI (IP в serverName клиента): ClientHello приходит без имени —
+	# отдаём сертификат своего домена, а не самоподписанный из catch-all ниже.
+	default_sni {$SELF_STEAL_DOMAIN}
 	# Disable the admin API (:2019). We never use `caddy reload`/admin here
 	# (Caddy is managed via docker compose), and its default bind resolves the
 	# hostname "localhost" — which fails under network_mode: host when the
@@ -2122,8 +2134,14 @@ https://{$SELF_STEAL_DOMAIN} {
 }
 
 :{$SELF_STEAL_PORT} {
+	# Сюда попадают запросы с Host: IP (проба без SNI) и чужими именами —
+	# отдаём тот же сайт, а не пустой 204: «сайт по IP» выглядит обычно.
 	tls internal
-	respond 204
+	encode gzip
+	header -Server
+	root * /var/www/html
+	try_files {path} /index.html
+	file_server
 	log off
 }
 

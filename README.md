@@ -269,6 +269,35 @@ WHITELIST="95.85.245.139,93.123.85.3" NONINTERACTIVE=1 \
 > IP, с которого ты сейчас зашёл по SSH, тоже попадает в whitelist (защита от
 > самоблокировки) — с него 2222 тоже будет открыт.
 
+## Хост «IP в SNI + фрагментация» (Reality без SNI)
+
+Клиент подключается по IP ноды, в `serverName` стоит IP — ClientHello уходит без SNI,
+порезанный на куски по 10–20 байт (`finalmask` fragment). Чтобы пробник без SNI видел
+обычный сайт с валидным сертификатом, заглушка selfsteal отдаёт на такой ClientHello
+сертификат своего домена (`default_sni` в Caddyfile) и сам сайт по `Host: IP`.
+
+- **Новая нода** — ставь как обычно (`relabel all-with-accelerator …`): selfsteal уже
+  с `default_sni`. В конце запусти `relabel ipsni` — проверка и подсказка для панели.
+- **Нода, где selfsteal уже стоит** — `relabel ipsni`: допишет `default_sni` в
+  Caddyfile (бэкап в `.state/backups/`), перезапустит заглушку и проверит.
+
+```bash
+cd /opt/infra-relabel && git pull && ./install.sh && relabel ipsni
+```
+
+Проверка внутри: `openssl s_client -connect 127.0.0.1:443 -noservername` (через Xray →
+Reality → заглушку) должен дать сертификат домена с `Verify return code: 0`, а
+`curl -k https://127.0.0.1/` — `200`.
+
+В панели (команда выводит то же с IP ноды):
+
+1. Профиль конфига, Reality-инбаунд на 443: `serverNames: ["<домен>", ""]` (пустая
+   строка вторым), первым в `shortIds` — настоящий shortId, `target` — заглушка selfsteal.
+2. Новый хост на этот инбаунд: Address = IP ноды, Port 443, SNI = IP ноды,
+   Fingerprint `firefox`, ALPN пусто, Final Mask:
+   `{"tcp":[{"type":"fragment","settings":{"lengths":["10-20"],"delays":["0"],"packets":"tlshello"}}]}`
+3. Хост — в сквад. Маска доходит только в Xray JSON-подписке (sing-box/Mihomo её не получат).
+
 ## Быстрый старт — только маскировка
 
 ```bash

@@ -772,7 +772,8 @@ SELFSTEAL_URL="$(gh_url "https://github.com/ASTORKA/remnawave-scripts/raw/main/s
 cmd_selfsteal() {
   load_conf
   if docker container inspect web-frontend >/dev/null 2>&1 \
-     || docker container inspect caddy-selfsteal >/dev/null 2>&1; then
+     || docker container inspect caddy-selfsteal >/dev/null 2>&1 \
+     || docker container inspect nginx-selfsteal >/dev/null 2>&1; then
     c_dim "· selfsteal уже установлен (контейнер есть) — пропуск"
     return 0
   fi
@@ -839,6 +840,81 @@ cmd_mobile443() {
     c_grn "· установка mobile443 block-only (ответь: какие листы и порты)…"
     bash "$m" install block-only
   fi
+}
+
+# Хост «IP в SNI + фрагментация» (Reality без SNI): заглушка selfsteal должна
+# отдавать сертификат своего домена на ClientHello без имени. Новые установки
+# selfsteal уже такие; на старых дописываем default_sni в Caddyfile.
+# Затем проверка через 443 (Xray → Reality → заглушка) и подсказка для панели.
+# default_sni после auto_https + сайт вместо `respond 204` в блоке :{$SELF_STEAL_PORT}.
+patch_caddyfile_ipsni() {
+  local f="$1" tmp
+  tmp="$(mktemp)"
+  awk '
+    { ind = $0; sub(/[^ \t].*$/, "", ind) }
+    /^:\{\$SELF_STEAL_PORT\} \{/ { inblk = 1 }
+    inblk && /^\}/ { inblk = 0 }
+    inblk && $1 == "respond" && $2 == "204" && NF == 2 {
+      print ind "root * /var/www/html"; print ind "try_files {path} /index.html"; print ind "file_server"; next
+    }
+    { print }
+    $1 == "auto_https" && $2 == "disable_redirects" { print ind "default_sni {$SELF_STEAL_DOMAIN}" }
+  ' "$f" > "$tmp" && cat "$tmp" > "$f"
+  rm -f "$tmp"
+}
+
+cmd_ipsni() {
+  local c="" n
+  for n in web-frontend caddy-selfsteal nginx-selfsteal; do
+    docker container inspect "$n" >/dev/null 2>&1 && { c="$n"; break; }
+  done
+  [ -n "$c" ] || die "заглушка selfsteal не найдена — сначала: relabel selfsteal"
+  local cf
+  cf="$(docker container inspect -f '{{range .Mounts}}{{if eq .Destination "/etc/caddy/Caddyfile"}}{{.Source}}{{end}}{{end}}' "$c")"
+  if [ -n "$cf" ] && [ -f "$cf" ]; then
+    if grep -q 'default_sni' "$cf"; then
+      c_dim "· Caddyfile ($cf): default_sni уже есть"
+    else
+      c_grn "· Caddyfile ($cf): + default_sni, сайт вместо 204 в catch-all"
+      run mkdir -p "$BACKUP_DIR"
+      run cp -a "$cf" "$BACKUP_DIR/Caddyfile.$(date +%s)"
+      run patch_caddyfile_ipsni "$cf"
+      run docker restart "$c"
+      [ "$DRY_RUN" = 1 ] || sleep 3
+    fi
+  else
+    c_dim "· $c — nginx на unix-сокете: единственный server, без SNI и так отдаёт свой сертификат"
+  fi
+  [ "$DRY_RUN" = 1 ] && return 0
+
+  echo; c_grn "════ проверка: TLS на 443 без SNI (как увидит пробник) ════"
+  local out subj vr code
+  out="$(timeout 10 openssl s_client -connect 127.0.0.1:443 -noservername </dev/null 2>&1 || true)"
+  subj="$(printf '%s\n' "$out" | grep -m1 '^subject=' || true)"
+  vr="$(printf '%s\n' "$out" | grep -m1 'Verify return code' || true)"
+  code="$(curl -sk --max-time 10 -o /dev/null -w '%{http_code}' https://127.0.0.1/ || true)"
+  echo "  сертификат: ${subj:-нет ответа}"
+  echo "  ${vr:-Verify: нет ответа}"
+  echo "  HTTP по IP: ${code:-нет ответа}"
+  if printf '%s' "$vr" | grep -q ': 0 (ok)' && [ "$code" = 200 ]; then
+    c_grn "  OK — без SNI отдаётся сайт с валидным сертификатом"
+  else
+    c_yel "  Не то: ожидался сертификат домена (Verify 0) и HTTP 200. Проверь target у Reality-инбаунда на 443 и docker logs $c"
+  fi
+
+  local ip; ip="$(curl -4 -fsS --max-time 8 https://api.ipify.org 2>/dev/null || echo IP_НОДЫ)"
+  cat <<IPSNI_EOF
+
+════ что сделать в панели Remnawave ════
+1) Профиль конфига, Reality-инбаунд на 443:
+     serverNames: ["<твой домен>", ""]   — пустая строка ВТОРОЙ: без неё клиент без SNI уйдёт в заглушку
+     shortIds: первым настоящий shortId (не "")
+     target: заглушка selfsteal (как сейчас), не чужой сайт
+2) Новый хост на этот инбаунд:
+     Address: $ip   Port: 443   SNI: $ip   Fingerprint: firefox   ALPN: пусто
+     Final Mask: {"tcp":[{"type":"fragment","settings":{"lengths":["10-20"],"delays":["0"],"packets":"tlshello"}}]}
+3) Хост — в нужный сквад. Клиенту нужна Xray JSON-подписка (sing-box/Mihomo маску не получат).
+IPSNI_EOF
 }
 
 # Блокировка подсетей сканеров на весь сервер (ipset + iptables): гос-сети,
@@ -1005,6 +1081,7 @@ relabel.sh — маскировка имён docker-контейнеров VPN-�
   relabel sysmgr [--dry-run]   установить управляющий фреймворк sysmgr (root)
   relabel mobile443 [--dry-run] фильтр портов: дроп blocklist'ов, block-only (root)
   relabel ipfilter [--dry-run]  блок подсетей сканеров на весь сервер, меню `ipfilter` (root)
+  relabel ipsni [--dry-run]     заглушка под хост «IP в SNI + фрагментация» + проверка (root)
   relabel ps                   показать процессы внутри контейнеров
 
 ОТКАТ ПО ШАГАМ:  restore / images-restore / project-restore /
@@ -1049,6 +1126,7 @@ case "${1:-}" in
   sysmgr)            cmd_sysmgr ;;
   mobile443)         cmd_mobile443 ;;
   ipfilter)          cmd_ipfilter ;;
+  ipsni)             cmd_ipsni ;;
   ps)                cmd_ps ;;
   ""|-h|--help|help) usage ;;
   *) die "неизвестная команда: $1 (см. --help)" ;;
