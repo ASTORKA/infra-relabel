@@ -1476,11 +1476,15 @@ detect_existing_installation() {
 init_web_server_config
 # Fetch IP address with fallback
 get_server_ip() {
-    local ip
-    ip=$(curl -s -4 --connect-timeout 5 ifconfig.io 2>/dev/null) || \
-    ip=$(curl -s -4 --connect-timeout 5 icanhazip.com 2>/dev/null) || \
-    ip=$(curl -s -4 --connect-timeout 5 ipecho.net/plain 2>/dev/null) || \
-    ip="127.0.0.1"
+    local ip svc
+    # --max-time обязателен: под DPI сервис принимает соединение и молчит,
+    # и curl без него висит вечно (с ним виснет вся установка)
+    for svc in ifconfig.io icanhazip.com ipecho.net/plain api.ipify.org; do
+        ip=$(curl -fsS -4 --connect-timeout 5 --max-time 8 "$svc" 2>/dev/null | tr -d '[:space:]')
+        [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && { echo "$ip"; return; }
+    done
+    # без внешних сервисов — адрес исходящего интерфейса
+    ip=$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p')
     echo "${ip:-127.0.0.1}"
 }
 NODE_IP=$(get_server_ip)
@@ -1501,7 +1505,7 @@ install_docker() {
     
     # Run installation silently, capture output for error reporting
     local install_log=$(mktemp)
-    if curl -fsSL https://get.docker.com 2>/dev/null | sh >"$install_log" 2>&1; then
+    if curl -fsSL --connect-timeout 10 --max-time 120 https://get.docker.com 2>/dev/null | sh >"$install_log" 2>&1; then
         rm -f "$install_log"
         
         # Start and enable Docker service
@@ -4001,7 +4005,7 @@ install_management_script() {
         script_path="$0"
     else
         local temp_script="/tmp/selfsteal-install.sh"
-        if curl -fsSL "$UPDATE_URL" -o "$temp_script" 2>/dev/null; then
+        if curl -fsSL --connect-timeout 10 --max-time 60 "$UPDATE_URL" -o "$temp_script" 2>/dev/null; then
             script_path="$temp_script"
             echo -e "${GRAY}📥 Downloaded script from remote source${NC}"
         else
@@ -4790,7 +4794,7 @@ check_for_updates() {
     # Get latest version from GitHub script
     echo -e "${WHITE}📝 Fetching latest script version...${NC}"
     local remote_script_version
-    remote_script_version=$(curl -s "$UPDATE_URL" 2>/dev/null | grep "^SCRIPT_VERSION=" | cut -d'"' -f2)
+    remote_script_version=$(curl -s --connect-timeout 10 --max-time 20 "$UPDATE_URL" 2>/dev/null | grep "^SCRIPT_VERSION=" | cut -d'"' -f2)
     
     if [ -z "$remote_script_version" ]; then
         echo -e "${YELLOW}⚠️  Unable to fetch latest version${NC}"
@@ -4839,7 +4843,7 @@ update_script() {
     # Download new version
     local temp_file="/tmp/caddy-selfsteal-update-$$.sh"
     
-    if curl -fsSL "$UPDATE_URL" -o "$temp_file" 2>/dev/null; then
+    if curl -fsSL --connect-timeout 10 --max-time 60 "$UPDATE_URL" -o "$temp_file" 2>/dev/null; then
         # Verify downloaded file
         if [ -s "$temp_file" ] && head -1 "$temp_file" | grep -q "#!/"; then
             # Get new version from downloaded script
