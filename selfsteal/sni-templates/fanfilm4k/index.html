@@ -1,0 +1,842 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="robots" content="noindex, nofollow" />
+<title>FANFILM4K — Кино в 4K Ultra HD</title>
+<style>
+/* ─── Design tokens ───────────────────────────────────────────────────── */
+:root {
+  --c-base:   #09090d;
+  --c-1:      #0f0f15;
+  --c-2:      #151520;
+  --c-3:      #1c1c2a;
+  --c-4:      #242436;
+  --c-line:   rgba(255,255,255,.07);
+  --c-line-2: rgba(255,255,255,.04);
+  --c-ink-1:  #eeeef4;
+  --c-ink-2:  #9898b0;
+  --c-ink-3:  #5c5c72;
+  --c-accent: #c8183a;        /* кинематографичный красный — единственный акцент */
+  --c-accent-dim: rgba(200,24,58,.15);
+  --c-accent-border: rgba(200,24,58,.30);
+  --r-sm:   6px;
+  --r-md:  10px;
+  --r-lg:  16px;
+  --r-xl:  22px;
+  --maxw:  1260px;
+  --font:  -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ─── Reset ───────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body {
+  background: var(--c-base);
+  color: var(--c-ink-1);
+  font-family: var(--font);
+  min-height: 100vh;
+}
+body.locked { overflow: hidden; }
+a { color: inherit; text-decoration: none; }
+ul { list-style: none; }
+button { font-family: inherit; cursor: pointer; border: none; background: none; }
+
+/* тонкий шум-оверлей через SVG-фильтр — глубина без паразитных бликов */
+body::before {
+  content: "";
+  position: fixed; inset: 0; z-index: 0; pointer-events: none;
+  opacity: .025;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* ─── Utility ─────────────────────────────────────────────────────────── */
+.container { max-width: var(--maxw); margin: 0 auto; padding: 0 24px; }
+
+.eyebrow {
+  display: inline-block;
+  font-size: 10px; font-weight: 700;
+  letter-spacing: .12em; text-transform: uppercase;
+  color: var(--c-ink-3);
+}
+
+/* ─── Header ──────────────────────────────────────────────────────────── */
+.site-header {
+  position: sticky; top: 0; z-index: 40;
+  background: linear-gradient(180deg, rgba(9,9,13,.97) 0%, rgba(9,9,13,.88) 100%);
+  backdrop-filter: blur(18px) saturate(140%);
+  border-bottom: 1px solid var(--c-line);
+}
+.header-inner {
+  max-width: var(--maxw); margin: 0 auto; padding: 0 24px;
+  height: 60px;
+  display: flex; align-items: center; gap: 32px;
+}
+
+/* Логотип */
+.wordmark {
+  display: flex; align-items: center; gap: 6px;
+  flex-shrink: 0;
+}
+.wordmark-text {
+  font-size: 18px; font-weight: 800; letter-spacing: -.02em;
+  color: var(--c-ink-1);
+}
+.wordmark-badge {
+  font-size: 9px; font-weight: 700; letter-spacing: .08em;
+  color: var(--c-accent);
+  border: 1px solid var(--c-accent-border);
+  border-radius: 3px;
+  padding: 2px 5px;
+  font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+/* Навигация */
+.main-nav {
+  display: flex; align-items: center; gap: 2px;
+  flex: 1;
+}
+.main-nav a {
+  font-size: 13.5px; font-weight: 500;
+  color: var(--c-ink-2);
+  padding: 6px 11px; border-radius: var(--r-sm);
+  transition: color .15s, background .15s;
+  white-space: nowrap;
+}
+.main-nav a:hover { color: var(--c-ink-1); background: rgba(255,255,255,.05); }
+.main-nav a.accent { color: var(--c-accent); }
+.main-nav a.accent:hover { background: var(--c-accent-dim); }
+
+/* Search */
+.search-wrap {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--c-2);
+  border: 1px solid var(--c-line);
+  border-radius: 8px;
+  padding: 7px 12px;
+  transition: border-color .15s;
+}
+.search-wrap:focus-within { border-color: rgba(255,255,255,.18); }
+.search-wrap svg { flex-shrink: 0; }
+.search-wrap input {
+  background: transparent; border: 0; outline: none;
+  color: var(--c-ink-1); font-size: 13px; font-family: inherit;
+  width: 160px;
+}
+.search-wrap input::placeholder { color: var(--c-ink-3); }
+
+.btn-ghost {
+  font-size: 13px; font-weight: 600;
+  color: var(--c-ink-2);
+  border: 1px solid var(--c-line);
+  border-radius: 8px;
+  padding: 7px 16px;
+  transition: color .15s, border-color .15s, background .15s;
+  white-space: nowrap;
+}
+.btn-ghost:hover { color: var(--c-ink-1); border-color: rgba(255,255,255,.18); background: rgba(255,255,255,.05); }
+.btn-ghost:focus-visible { outline: 2px solid var(--c-accent); outline-offset: 2px; }
+
+.btn-primary {
+  font-size: 13px; font-weight: 700;
+  color: #fff;
+  background: var(--c-accent);
+  border-radius: 8px;
+  padding: 7px 18px;
+  transition: opacity .15s;
+  white-space: nowrap;
+}
+.btn-primary:hover { opacity: .86; }
+.btn-primary:focus-visible { outline: 2px solid var(--c-accent); outline-offset: 2px; }
+
+@media (max-width: 900px) {
+  .main-nav, .search-wrap { display: none; }
+}
+
+/* ─── Hero ────────────────────────────────────────────────────────────── */
+.hero {
+  position: relative;
+  padding: 56px 0 0;
+  overflow: hidden;
+}
+.hero-inner {
+  max-width: var(--maxw); margin: 0 auto; padding: 0 24px;
+  display: grid; grid-template-columns: 1fr 440px; gap: 40px; align-items: center;
+  padding-bottom: 64px;
+}
+@media (max-width: 900px) {
+  .hero-inner { grid-template-columns: 1fr; }
+  .hero-poster { display: none; }
+}
+
+.hero-eyebrow { display: flex; align-items: center; gap: 10px; margin-bottom: 22px; }
+.hero-eyebrow .dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--c-accent);
+  box-shadow: 0 0 8px var(--c-accent);
+}
+.hero-eyebrow .label {
+  font-size: 11px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--c-accent);
+}
+
+.hero h1 {
+  font-size: clamp(34px, 4.5vw, 58px);
+  font-weight: 800;
+  letter-spacing: -.03em;
+  line-height: 1.05;
+  margin-bottom: 20px;
+  color: var(--c-ink-1);
+}
+.hero h1 em { font-style: normal; color: var(--c-accent); }
+
+.hero-desc {
+  font-size: 16px; line-height: 1.65;
+  color: var(--c-ink-2);
+  max-width: 520px;
+  margin-bottom: 30px;
+}
+
+.hero-meta {
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  margin-bottom: 32px;
+}
+.hero-meta .meta-chip {
+  font-size: 12px; font-weight: 600;
+  color: var(--c-ink-3);
+  background: var(--c-2);
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-sm);
+  padding: 4px 9px;
+}
+.hero-meta .score {
+  font-size: 14px; font-weight: 700; color: var(--c-ink-1);
+}
+.hero-meta .score span { color: var(--c-ink-3); font-weight: 400; font-size: 12px; }
+
+.hero-actions { display: flex; align-items: center; gap: 12px; }
+.btn-hero {
+  display: inline-flex; align-items: center; gap: 9px;
+  font-size: 14.5px; font-weight: 700;
+  background: var(--c-accent); color: #fff;
+  border-radius: 10px;
+  padding: 12px 24px;
+  transition: opacity .15s;
+  letter-spacing: -.01em;
+}
+.btn-hero:hover { opacity: .85; }
+.btn-hero svg { flex-shrink: 0; }
+.btn-hero-outline {
+  display: inline-flex; align-items: center; gap: 9px;
+  font-size: 14.5px; font-weight: 600;
+  background: rgba(255,255,255,.06);
+  color: var(--c-ink-1);
+  border: 1px solid var(--c-line);
+  border-radius: 10px;
+  padding: 12px 24px;
+  transition: background .15s;
+}
+.btn-hero-outline:hover { background: rgba(255,255,255,.1); }
+
+/* Hero постер-карточка */
+.hero-poster {
+  position: relative;
+  border-radius: var(--r-xl);
+  overflow: hidden;
+  border: 1px solid var(--c-line);
+}
+.poster-visual {
+  aspect-ratio: 2/3;
+  position: relative;
+  /* дуотон-градиент: холодный верх → тёплое дно */
+  background: linear-gradient(165deg,
+    hsl(220, 30%, 18%) 0%,
+    hsl(240, 22%, 12%) 40%,
+    hsl(350, 28%, 10%) 70%,
+    hsl(12, 35%, 8%) 100%
+  );
+}
+/* горизонтальные полосы кинотакта */
+.poster-visual::after {
+  content: "";
+  position: absolute; inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 3px,
+    rgba(255,255,255,.012) 3px,
+    rgba(255,255,255,.012) 4px
+  );
+  pointer-events: none;
+}
+.poster-frame {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column; justify-content: space-between;
+  padding: 18px;
+}
+.poster-chip {
+  align-self: flex-start;
+  font-size: 9px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase;
+  color: #fff;
+  background: var(--c-accent);
+  border-radius: 4px;
+  padding: 3px 7px;
+  font-family: ui-monospace, "SF Mono", monospace;
+}
+.poster-title-block { }
+.poster-title-block .pt-eyebrow {
+  font-size: 10px; font-weight: 600; letter-spacing: .12em; text-transform: uppercase;
+  color: rgba(255,255,255,.45); margin-bottom: 6px;
+}
+.poster-title-block h3 {
+  font-size: 22px; font-weight: 800; letter-spacing: -.03em; line-height: 1.1;
+  color: #fff;
+}
+.poster-title-block .pt-meta {
+  margin-top: 8px; font-size: 12px; color: rgba(255,255,255,.5);
+  display: flex; gap: 10px;
+}
+
+/* декоративные кинофрагменты */
+.poster-shapes {
+  position: absolute; inset: 0; pointer-events: none; overflow: hidden;
+}
+
+/* ─── Content rail ────────────────────────────────────────────────────── */
+.section { padding: 16px 0 40px; }
+.section-header {
+  max-width: var(--maxw); margin: 0 auto; padding: 0 24px 20px;
+  display: flex; align-items: center; justify-content: space-between;
+}
+.section-title {
+  font-size: 20px; font-weight: 700; letter-spacing: -.025em;
+  color: var(--c-ink-1);
+}
+.section-link {
+  font-size: 12.5px; font-weight: 600;
+  color: var(--c-ink-3);
+  display: flex; align-items: center; gap: 5px;
+  transition: color .15s;
+}
+.section-link:hover { color: var(--c-ink-1); }
+
+.rail {
+  max-width: var(--maxw); margin: 0 auto; padding: 0 24px;
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 14px;
+}
+@media (max-width: 1100px) { .rail { grid-template-columns: repeat(5, 1fr); } }
+@media (max-width: 860px)  { .rail { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 560px)  { .rail { grid-template-columns: repeat(2, 1fr); } }
+
+/* Film card */
+.film-card {
+  border-radius: var(--r-md);
+  overflow: hidden;
+  background: var(--c-1);
+  border: 1px solid var(--c-line);
+  transition: transform .18s cubic-bezier(.25,.46,.45,.94),
+              border-color .18s;
+  cursor: default;
+}
+.film-card:hover {
+  transform: translateY(-3px);
+  border-color: rgba(255,255,255,.15);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .film-card { transition: none; }
+}
+
+.film-poster {
+  aspect-ratio: 2/3;
+  position: relative;
+  overflow: hidden;
+}
+/* Уникальные дуотон-постеры через CSS-градиенты */
+.film-poster svg {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+}
+.fp-1 { background: linear-gradient(155deg, hsl(218,38%,22%) 0%, hsl(235,30%,10%) 55%, hsl(250,20%,6%) 100%); }
+.fp-2 { background: linear-gradient(155deg, hsl(358,40%,22%) 0%, hsl(14,30%,12%) 55%, hsl(0,20%,7%) 100%); }
+.fp-3 { background: linear-gradient(155deg, hsl(168,35%,18%) 0%, hsl(195,28%,10%) 55%, hsl(210,20%,6%) 100%); }
+.fp-4 { background: linear-gradient(155deg, hsl(280,32%,20%) 0%, hsl(260,25%,11%) 55%, hsl(245,18%,7%) 100%); }
+.fp-5 { background: linear-gradient(155deg, hsl(34,40%,22%) 0%, hsl(20,30%,12%) 55%, hsl(10,20%,7%) 100%); }
+.fp-6 { background: linear-gradient(155deg, hsl(200,38%,20%) 0%, hsl(215,28%,11%) 55%, hsl(230,18%,6%) 100%); }
+.fp-7 { background: linear-gradient(155deg, hsl(145,30%,18%) 0%, hsl(165,25%,10%) 55%, hsl(180,18%,6%) 100%); }
+.fp-8 { background: linear-gradient(155deg, hsl(340,36%,20%) 0%, hsl(320,26%,12%) 55%, hsl(300,18%,7%) 100%); }
+.fp-9 { background: linear-gradient(155deg, hsl(48,38%,20%) 0%, hsl(30,28%,11%) 55%, hsl(16,18%,7%) 100%); }
+
+/* «Глубина» через layered pseudo */
+.film-poster::after {
+  content: "";
+  position: absolute; inset: 0;
+  background: linear-gradient(0deg, rgba(0,0,0,.7) 0%, transparent 50%);
+  pointer-events: none;
+}
+
+.film-badge {
+  position: absolute; top: 9px; left: 9px; z-index: 2;
+  font-size: 8.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+  color: rgba(255,255,255,.85);
+  background: rgba(0,0,0,.5);
+  border: 1px solid rgba(255,255,255,.12);
+  border-radius: 4px;
+  padding: 2px 6px;
+  backdrop-filter: blur(4px);
+  font-family: ui-monospace, "SF Mono", monospace;
+}
+.film-badge.accent { background: var(--c-accent); border-color: transparent; color: #fff; }
+
+.film-poster-title {
+  position: absolute; bottom: 10px; left: 11px; right: 11px; z-index: 2;
+  font-size: 13px; font-weight: 700; letter-spacing: -.01em; line-height: 1.25;
+  color: #fff;
+  text-shadow: 0 1px 6px rgba(0,0,0,.9);
+}
+
+.film-info {
+  padding: 9px 11px 11px;
+}
+.film-info .fi-year {
+  font-size: 11.5px; color: var(--c-ink-3);
+  font-variant-numeric: tabular-nums;
+}
+.film-info .fi-genre {
+  font-size: 11px; color: var(--c-ink-3);
+  margin-top: 3px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* Divider */
+.rail-divider {
+  max-width: var(--maxw); margin: 0 auto;
+  border: none; border-top: 1px solid var(--c-line-2);
+}
+
+/* ─── Footer ──────────────────────────────────────────────────────────── */
+.site-footer {
+  border-top: 1px solid var(--c-line);
+  background: var(--c-1);
+  margin-top: 32px;
+}
+.footer-main {
+  max-width: var(--maxw); margin: 0 auto; padding: 44px 24px 36px;
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  gap: 48px;
+}
+@media (max-width: 700px) {
+  .footer-main { grid-template-columns: 1fr; gap: 32px; }
+}
+.footer-brand .wordmark { margin-bottom: 14px; }
+.footer-brand p {
+  font-size: 13px; line-height: 1.65; color: var(--c-ink-3);
+  max-width: 220px;
+}
+.footer-cols {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px;
+}
+@media (max-width: 560px) { .footer-cols { grid-template-columns: 1fr 1fr; } }
+.footer-cols h4 {
+  font-size: 11px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--c-ink-3);
+  margin-bottom: 14px;
+}
+.footer-cols li + li { margin-top: 9px; }
+.footer-cols a {
+  font-size: 13px; color: var(--c-ink-2);
+  transition: color .13s;
+}
+.footer-cols a:hover { color: var(--c-ink-1); }
+.footer-bottom {
+  border-top: 1px solid var(--c-line-2);
+  max-width: var(--maxw); margin: 0 auto; padding: 16px 24px;
+  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;
+}
+.footer-bottom span {
+  font-size: 12px; color: var(--c-ink-3);
+}
+.footer-legal { display: flex; gap: 20px; }
+.footer-legal a { font-size: 12px; color: var(--c-ink-3); transition: color .13s; }
+.footer-legal a:hover { color: var(--c-ink-2); }
+
+/* ─── Maintenance overlay ─────────────────────────────────────────────── */
+.overlay {
+  position: fixed; inset: 0; z-index: 9999;
+  background: rgba(5, 5, 9, .82);
+  backdrop-filter: blur(14px) saturate(120%);
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px;
+}
+
+.overlay-card {
+  width: min(480px, 100%);
+  background: linear-gradient(180deg, var(--c-3) 0%, var(--c-2) 100%);
+  border: 1px solid rgba(255,255,255,.09);
+  border-radius: var(--r-xl);
+  /* верхний внутренний блик — мастерская деталь */
+  box-shadow:
+    0 0 0 1px rgba(255,255,255,.04) inset,
+    0 1px 0 rgba(255,255,255,.08) inset,
+    0 32px 96px rgba(0,0,0,.6),
+    0 4px 24px rgba(0,0,0,.3);
+  padding: 40px 36px 36px;
+  text-align: center;
+}
+@media (max-width: 480px) {
+  .overlay-card { padding: 30px 22px 26px; }
+}
+
+/* Лого в оверлее */
+.overlay-logo {
+  display: flex; align-items: center; justify-content: center; gap: 7px;
+  margin-bottom: 28px;
+}
+.overlay-logo .wm-text {
+  font-size: 20px; font-weight: 800; letter-spacing: -.025em;
+  color: var(--c-ink-1);
+}
+.overlay-logo .wm-badge {
+  font-size: 9px; font-weight: 700; letter-spacing: .08em;
+  color: var(--c-accent);
+  border: 1px solid var(--c-accent-border);
+  border-radius: 3px;
+  padding: 2px 5px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+.overlay-icon {
+  width: 52px; height: 52px;
+  margin: 0 auto 24px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 14px;
+  background: var(--c-4);
+  border: 1px solid rgba(255,255,255,.08);
+}
+
+.overlay-heading {
+  font-size: 22px; font-weight: 800; letter-spacing: -.03em; line-height: 1.15;
+  margin-bottom: 12px;
+}
+.overlay-body {
+  font-size: 14.5px; line-height: 1.65;
+  color: var(--c-ink-2);
+  margin-bottom: 6px;
+}
+.overlay-note {
+  font-size: 13px; color: var(--c-ink-3); line-height: 1.6;
+  margin-bottom: 28px;
+}
+
+/* Индикатор прогресса: три пульсирующих точки */
+.progress-dots {
+  display: flex; align-items: center; justify-content: center; gap: 7px;
+  margin: 0 auto 20px;
+}
+.progress-dots span {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--c-accent);
+  animation: dot-pulse 1.6s ease-in-out infinite;
+  opacity: .25;
+}
+.progress-dots span:nth-child(2) { animation-delay: .22s; }
+.progress-dots span:nth-child(3) { animation-delay: .44s; }
+
+@keyframes dot-pulse {
+  0%, 100% { opacity: .2; transform: scale(.85); }
+  50%       { opacity: 1;  transform: scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .progress-dots span { animation: none; opacity: .6; }
+}
+
+.overlay-status {
+  font-size: 11.5px; color: var(--c-ink-3);
+  letter-spacing: .04em;
+}
+</style>
+</head>
+<body class="locked">
+
+<!-- ═══════════════════════════ HEADER ═══════════════════════════════════ -->
+<header class="site-header">
+  <div class="header-inner">
+    <a href="#" class="wordmark" aria-label="FANFILM4K — на главную">
+      <span class="wordmark-text">FANFILM4K</span>
+      <span class="wordmark-badge">UHD</span>
+    </a>
+    <nav class="main-nav" aria-label="Основная навигация">
+      <a href="#">Новинки</a>
+      <a href="#">Фильмы</a>
+      <a href="#">Сериалы</a>
+      <a href="#" class="accent">4K UHD</a>
+      <a href="#">Аниме</a>
+      <a href="#">Документальное</a>
+    </nav>
+    <div class="search-wrap" role="search">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="color:var(--c-ink-3)">
+        <circle cx="11" cy="11" r="7"/><path d="m21 21-4.35-4.35"/>
+      </svg>
+      <input type="search" placeholder="Поиск фильмов и сериалов…" aria-label="Поиск" />
+    </div>
+    <button class="btn-ghost">Войти</button>
+    <button class="btn-primary">Подписка</button>
+  </div>
+</header>
+
+<!-- ═══════════════════════════ HERO ══════════════════════════════════════ -->
+<section class="hero" aria-label="Рекомендованное">
+  <div class="hero-inner">
+    <div class="hero-content">
+      <div class="hero-eyebrow">
+        <span class="dot" aria-hidden="true"></span>
+        <span class="label">Редакторский выбор · Эксклюзив</span>
+      </div>
+      <h1>Звук тишины.<br><em>В 4K Dolby Vision.</em></h1>
+      <p class="hero-desc">
+        Психологический триллер о дирижёре, потерявшем слух накануне мировой премьеры.
+        Производство Pathé Films, 2025. Доступно только на FANFILM4K в России.
+      </p>
+      <div class="hero-meta">
+        <span class="score">9.1 <span>/ 10</span></span>
+        <span class="meta-chip">2025</span>
+        <span class="meta-chip">2 ч 18 мин</span>
+        <span class="meta-chip">4K · Dolby Vision · Atmos</span>
+        <span class="meta-chip">16+</span>
+      </div>
+      <div class="hero-actions">
+        <a href="#" class="btn-hero">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+          Смотреть
+        </a>
+        <a href="#" class="btn-hero-outline">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+          Подробнее
+        </a>
+      </div>
+    </div>
+    <div class="hero-poster" aria-hidden="true">
+      <div class="poster-visual">
+        <svg viewBox="0 0 280 420" preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <radialGradient id="pg1" cx="30%" cy="20%">
+              <stop offset="0%" stop-color="rgba(100,130,200,.25)"/>
+              <stop offset="100%" stop-color="transparent"/>
+            </radialGradient>
+            <radialGradient id="pg2" cx="70%" cy="80%">
+              <stop offset="0%" stop-color="rgba(180,40,60,.18)"/>
+              <stop offset="100%" stop-color="transparent"/>
+            </radialGradient>
+          </defs>
+          <rect width="280" height="420" fill="url(#pg1)"/>
+          <rect width="280" height="420" fill="url(#pg2)"/>
+          <!-- Стилизованная фигура дирижёра — минималистичная -->
+          <ellipse cx="140" cy="130" rx="28" ry="28" fill="rgba(255,255,255,.07)" stroke="rgba(255,255,255,.12)" stroke-width="1"/>
+          <line x1="140" y1="158" x2="140" y2="260" stroke="rgba(255,255,255,.09)" stroke-width="1.5"/>
+          <line x1="140" y1="190" x2="88" y2="230" stroke="rgba(255,255,255,.09)" stroke-width="1.5"/>
+          <line x1="140" y1="190" x2="192" y2="218" stroke="rgba(255,255,255,.09)" stroke-width="1.5"/>
+          <!-- Нотные линейки -->
+          <line x1="30" y1="300" x2="250" y2="300" stroke="rgba(255,255,255,.05)" stroke-width="1"/>
+          <line x1="30" y1="312" x2="250" y2="312" stroke="rgba(255,255,255,.05)" stroke-width="1"/>
+          <line x1="30" y1="324" x2="250" y2="324" stroke="rgba(255,255,255,.05)" stroke-width="1"/>
+          <line x1="30" y1="336" x2="250" y2="336" stroke="rgba(255,255,255,.05)" stroke-width="1"/>
+          <line x1="30" y1="348" x2="250" y2="348" stroke="rgba(255,255,255,.05)" stroke-width="1"/>
+        </svg>
+      </div>
+      <div class="poster-frame">
+        <span class="poster-chip">Эксклюзив</span>
+        <div class="poster-title-block">
+          <p class="pt-eyebrow">Pathé Films · 2025</p>
+          <h3>Звук тишины</h3>
+          <div class="pt-meta">
+            <span>Триллер</span>
+            <span>·</span>
+            <span>Драма</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════ TRENDING RAIL ═════════════════════════════ -->
+<section class="section" aria-label="Сейчас в тренде">
+  <hr class="rail-divider">
+  <div class="section-header" style="padding-top:32px">
+    <h2 class="section-title">Сейчас в тренде</h2>
+    <a href="#" class="section-link">
+      Все фильмы
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+    </a>
+  </div>
+  <div class="rail" id="rail-trending" role="list"></div>
+</section>
+
+<!-- ═══════════════════════════ NEW 4K RAIL ═══════════════════════════════ -->
+<section class="section" aria-label="Новинки в 4K">
+  <hr class="rail-divider">
+  <div class="section-header" style="padding-top:32px">
+    <h2 class="section-title">Новинки в 4K</h2>
+    <a href="#" class="section-link">
+      Весь каталог 4K
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+    </a>
+  </div>
+  <div class="rail" id="rail-new4k" role="list"></div>
+</section>
+
+<!-- ═══════════════════════════ FOOTER ═══════════════════════════════════ -->
+<footer class="site-footer" role="contentinfo">
+  <div class="footer-main">
+    <div class="footer-brand">
+      <a href="#" class="wordmark" aria-label="FANFILM4K">
+        <span class="wordmark-text">FANFILM4K</span>
+        <span class="wordmark-badge">UHD</span>
+      </a>
+      <p>Кинотека в 4K Ultra HD и Dolby Vision. Оригинальные версии и эксклюзивные премьеры.</p>
+    </div>
+    <div class="footer-cols">
+      <div>
+        <h4>Каталог</h4>
+        <ul>
+          <li><a href="#">Новинки</a></li>
+          <li><a href="#">Фильмы</a></li>
+          <li><a href="#">Сериалы</a></li>
+          <li><a href="#">4K UHD</a></li>
+          <li><a href="#">Аниме</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Аккаунт</h4>
+        <ul>
+          <li><a href="#">Войти</a></li>
+          <li><a href="#">Подписка</a></li>
+          <li><a href="#">Устройства</a></li>
+          <li><a href="#">Настройки</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Компания</h4>
+        <ul>
+          <li><a href="#">О сервисе</a></li>
+          <li><a href="#">Правообладателям</a></li>
+          <li><a href="#">Реклама</a></li>
+          <li><a href="#">Контакты</a></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+  <div style="max-width:var(--maxw);margin:0 auto;padding:0 24px">
+    <div class="footer-bottom">
+      <span>© 2025 FANFILM4K. Все права защищены.</span>
+      <div class="footer-legal">
+        <a href="#">Условия использования</a>
+        <a href="#">Конфиденциальность</a>
+        <a href="#">Соглашение об авторских правах</a>
+      </div>
+    </div>
+  </div>
+</footer>
+
+<!-- ═══════════════════ MAINTENANCE OVERLAY — нельзя закрыть ═════════════ -->
+<div class="overlay" id="overlay" role="alertdialog" aria-modal="true" aria-labelledby="overlay-heading" aria-describedby="overlay-body">
+  <div class="overlay-card">
+    <div class="overlay-logo" aria-label="FANFILM4K">
+      <span class="wm-text">FANFILM4K</span>
+      <span class="wm-badge">UHD</span>
+    </div>
+
+    <div class="overlay-icon" aria-hidden="true">
+      <!-- иконка «настройки/сервер» — минималистичная, не шестерёнка -->
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--c-ink-2)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="2" y="3" width="20" height="5" rx="2"/>
+        <rect x="2" y="10" width="20" height="5" rx="2"/>
+        <rect x="2" y="17" width="20" height="5" rx="2"/>
+        <circle cx="18" cy="5.5" r="1" fill="var(--c-ink-2)" stroke="none"/>
+        <circle cx="18" cy="12.5" r="1" fill="var(--c-ink-2)" stroke="none"/>
+        <circle cx="18" cy="19.5" r="1" fill="var(--c-accent)" stroke="none"/>
+      </svg>
+    </div>
+
+    <h2 class="overlay-heading" id="overlay-heading">Идут технические работы</h2>
+    <p class="overlay-body" id="overlay-body">
+      Мы проводим плановое обслуживание инфраструктуры.<br>Сервис будет недоступен ещё несколько часов.
+    </p>
+    <p class="overlay-note">
+      Ваша подписка и история просмотров сохранены в полном объёме.
+    </p>
+
+    <div class="progress-dots" aria-label="Выполняется обслуживание" role="status">
+      <span></span><span></span><span></span>
+    </div>
+    <p class="overlay-status">Обслуживание серверов · Пожалуйста, зайдите позже</p>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  /* ── Блокируем Escape ───────────────────────────────────────────────── */
+  window.addEventListener("keydown", function (e) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    }
+  }, true);
+
+  /* ── Клик по фону оверлея ничего не делает ─────────────────────────── */
+  document.getElementById("overlay").addEventListener("click", function (e) {
+    e.stopPropagation();
+  });
+
+  /* ── Генерация постеров ─────────────────────────────────────────────── */
+  var trending = [
+    { t: "Обратный отсчёт",  y: "2025", g: "Триллер · Боевик",   cls: "fp-1", badge: "HD",     accent: false },
+    { t: "Солнечный берег",  y: "2024", g: "Драма · Мелодрама",  cls: "fp-2", badge: "4K UHD", accent: true  },
+    { t: "Параллельные",     y: "2025", g: "Фантастика",         cls: "fp-3", badge: "Сериал", accent: false },
+    { t: "Семь вершин",      y: "2023", g: "Документальный",     cls: "fp-4", badge: "4K UHD", accent: true  },
+    { t: "Без права на ошибку", y: "2024", g: "Военный · Драма", cls: "fp-5", badge: "HD",     accent: false },
+    { t: "Тёмная вода",      y: "2025", g: "Хоррор · Триллер",  cls: "fp-6", badge: "4K UHD", accent: true  },
+  ];
+
+  var new4k = [
+    { t: "Небо над Кёльном",   y: "2025", g: "Криминальная драма",  cls: "fp-7", badge: "4K UHD", accent: true  },
+    { t: "Последняя коллекция", y: "2025", g: "Биография · Драма",  cls: "fp-8", badge: "4K UHD", accent: true  },
+    { t: "Полярный шторм",     y: "2024", g: "Приключения",          cls: "fp-9", badge: "4K UHD", accent: true  },
+    { t: "Код Монтевидео",     y: "2025", g: "Детектив · Триллер",  cls: "fp-1", badge: "4K UHD", accent: true  },
+    { t: "Точка невозврата",   y: "2024", g: "Экшн · Фантастика",   cls: "fp-2", badge: "4K UHD", accent: true  },
+    { t: "Архипелаг",          y: "2025", g: "Мини-сериал",          cls: "fp-3", badge: "Сериал", accent: false },
+  ];
+
+  function buildCard(item) {
+    var div = document.createElement("div");
+    div.className = "film-card";
+    div.setAttribute("role", "listitem");
+    div.innerHTML =
+      '<div class="film-poster ' + item.cls + '">' +
+        '<span class="film-badge' + (item.accent ? ' accent' : '') + '">' + item.badge + '</span>' +
+        '<span class="film-poster-title">' + item.t + '</span>' +
+      '</div>' +
+      '<div class="film-info">' +
+        '<div class="fi-year">' + item.y + '</div>' +
+        '<div class="fi-genre">' + item.g + '</div>' +
+      '</div>';
+    return div;
+  }
+
+  var rT = document.getElementById("rail-trending");
+  var r4 = document.getElementById("rail-new4k");
+  trending.forEach(function (it) { rT.appendChild(buildCard(it)); });
+  new4k.forEach(function (it) { r4.appendChild(buildCard(it)); });
+})();
+</script>
+</body>
+</html>

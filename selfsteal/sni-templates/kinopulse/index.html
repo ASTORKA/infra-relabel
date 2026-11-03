@@ -1,0 +1,1126 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="robots" content="noindex, nofollow" />
+<title>КиноПульс — авторский стриминг</title>
+<style>
+/* ─── Tokens ──────────────────────────────────────────────────── */
+:root {
+  --bg-0: #0e0a0b;
+  --bg-1: #140d0f;
+  --bg-2: #1c1214;
+  --bg-3: #26181b;
+  --bg-4: #311e22;
+  --line-1: rgba(255,255,255,.07);
+  --line-2: rgba(255,255,255,.04);
+  --ink-1: #f5ede8;
+  --ink-2: #c9a99e;
+  --ink-3: #8a6860;
+  --ink-4: #5c3e38;
+  --accent: #c0392b;       /* глубокий малиновый */
+  --accent-hi: #e85d4a;    /* подсветка */
+  --accent-lo: rgba(192,57,43,.14);
+  --amber: #c9913b;        /* янтарный — дозированно */
+  --amber-lo: rgba(201,145,59,.12);
+  --ok: #4a9e7e;
+  --r: 8px;
+  --r-sm: 5px;
+  --r-lg: 14px;
+  --maxw: 1280px;
+  font-synthesis: none;
+}
+
+/* ─── Reset ───────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; }
+body {
+  background: var(--bg-0);
+  color: var(--ink-1);
+  font-family: "Segoe UI", "Helvetica Neue", Arial, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  min-height: 100vh;
+  font-feature-settings: "kern" 1, "liga" 1;
+}
+body.locked { overflow: hidden; }
+a { color: var(--ink-2); text-decoration: none; }
+a:hover { color: var(--ink-1); }
+button { font-family: inherit; cursor: pointer; border: none; background: none; }
+img { display: block; }
+
+/* ─── Noise texture (inline SVG data-uri) ────────────────────── */
+body::before {
+  content: "";
+  position: fixed; inset: 0; z-index: 0; pointer-events: none;
+  opacity: .028;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)' opacity='1'/%3E%3C/svg%3E");
+}
+
+/* ─── Utility strip ───────────────────────────────────────────── */
+.utility-strip {
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--line-1);
+  padding: 7px 0;
+}
+.utility-strip-inner {
+  max-width: var(--maxw);
+  margin: 0 auto;
+  padding: 0 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.strip-eyebrow {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: .9px;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.strip-dot {
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+  animation: pulse-dot 2.4s ease-in-out infinite;
+}
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%       { opacity: .45; transform: scale(.65); }
+}
+.strip-links {
+  display: flex;
+  gap: 18px;
+}
+.strip-links a {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: .3px;
+  color: var(--ink-4);
+  transition: color .18s;
+}
+.strip-links a:hover { color: var(--ink-2); }
+@media (max-width: 680px) { .utility-strip { display: none; } }
+
+/* ─── Header ──────────────────────────────────────────────────── */
+header.site {
+  position: sticky; top: 0; z-index: 50;
+  background: linear-gradient(180deg, rgba(14,10,11,.97) 0%, rgba(14,10,11,.88) 100%);
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  border-bottom: 1px solid var(--line-1);
+}
+.header-inner {
+  max-width: var(--maxw);
+  margin: 0 auto;
+  padding: 0 24px;
+  height: 60px;
+  display: flex;
+  align-items: center;
+  gap: 32px;
+}
+
+/* Logo */
+.logo-lockup {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+.logo-wordmark {
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: -.4px;
+  color: var(--ink-1);
+  line-height: 1;
+}
+.logo-wordmark em {
+  font-style: normal;
+  color: var(--accent-hi);
+}
+.logo-pulse-svg {
+  width: 34px;
+  height: 18px;
+  flex-shrink: 0;
+}
+
+/* Nav */
+nav.site-nav {
+  display: flex;
+  gap: 4px;
+  flex: 1;
+}
+nav.site-nav a {
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--ink-3);
+  padding: 6px 10px;
+  border-radius: var(--r-sm);
+  transition: color .16s, background .16s;
+  letter-spacing: .1px;
+}
+nav.site-nav a:hover {
+  color: var(--ink-1);
+  background: var(--line-1);
+}
+@media (max-width: 860px) { nav.site-nav { display: none; } }
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+}
+.btn-ghost {
+  font-size: 13px; font-weight: 600;
+  color: var(--ink-2);
+  padding: 7px 16px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line-1);
+  transition: border-color .16s, color .16s;
+}
+.btn-ghost:hover { border-color: rgba(255,255,255,.15); color: var(--ink-1); }
+.btn-primary {
+  font-size: 13px; font-weight: 700;
+  color: #fff;
+  padding: 8px 18px;
+  border-radius: var(--r-sm);
+  background: var(--accent);
+  border: 1px solid transparent;
+  transition: background .16s, box-shadow .16s;
+  letter-spacing: .2px;
+}
+.btn-primary:hover {
+  background: var(--accent-hi);
+  box-shadow: 0 4px 20px rgba(192,57,43,.35);
+}
+:focus-visible {
+  outline: 2px solid var(--accent-hi);
+  outline-offset: 2px;
+}
+
+/* ─── Hero ────────────────────────────────────────────────────── */
+.hero-section {
+  max-width: var(--maxw);
+  margin: 32px auto 0;
+  padding: 0 24px;
+}
+.hero-card {
+  position: relative;
+  border-radius: var(--r-lg);
+  overflow: hidden;
+  border: 1px solid var(--line-1);
+  min-height: 360px;
+  display: flex;
+  align-items: flex-end;
+}
+/* Cinematic duotone gradient — deep wine + warm dark */
+.hero-card-bg {
+  position: absolute; inset: 0;
+  background:
+    linear-gradient(115deg,
+      hsl(358,62%,14%) 0%,
+      hsl(18,55%,9%)   45%,
+      hsl(0,0%,5%)     100%);
+}
+.hero-card-bg::after {
+  content: "";
+  position: absolute; inset: 0;
+  background:
+    radial-gradient(ellipse 70% 60% at 72% 20%, rgba(232,93,74,.22), transparent 65%),
+    linear-gradient(to top, rgba(14,10,11,.82) 0%, transparent 55%);
+}
+/* Abstract film-frame grid decoration */
+.hero-decor {
+  position: absolute;
+  right: 0; top: 0; bottom: 0;
+  width: 52%;
+  overflow: hidden;
+  pointer-events: none;
+}
+.hero-inner {
+  position: relative; z-index: 3;
+  padding: 40px 44px;
+  max-width: 600px;
+}
+.eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 1.1px;
+  text-transform: uppercase;
+  color: var(--amber);
+  margin-bottom: 18px;
+}
+.eyebrow-line {
+  width: 20px; height: 1px;
+  background: var(--amber);
+  opacity: .6;
+}
+.hero-title {
+  font-size: clamp(28px, 4vw, 42px);
+  font-weight: 800;
+  line-height: 1.08;
+  letter-spacing: -1.2px;
+  color: var(--ink-1);
+  margin-bottom: 14px;
+}
+.hero-desc {
+  font-size: 15px;
+  line-height: 1.62;
+  color: var(--ink-2);
+  margin-bottom: 22px;
+  max-width: 440px;
+}
+.hero-meta {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 26px;
+  flex-wrap: wrap;
+}
+.meta-tag {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--ink-3);
+  letter-spacing: .25px;
+}
+.meta-tag + .meta-tag::before {
+  content: "·";
+  margin-right: 16px;
+  color: var(--ink-4);
+}
+.meta-rating {
+  font-size: 12px; font-weight: 700;
+  color: var(--amber);
+  background: var(--amber-lo);
+  border: 1px solid rgba(201,145,59,.25);
+  border-radius: var(--r-sm);
+  padding: 3px 9px;
+  letter-spacing: .2px;
+}
+.hero-actions { display: flex; gap: 12px; flex-wrap: wrap; }
+.btn-play {
+  display: inline-flex; align-items: center; gap: 9px;
+  font-size: 14px; font-weight: 700;
+  color: #fff;
+  background: var(--accent);
+  padding: 11px 24px;
+  border-radius: var(--r-sm);
+  border: 1px solid transparent;
+  transition: background .16s, box-shadow .16s;
+  letter-spacing: .15px;
+}
+.btn-play:hover {
+  background: var(--accent-hi);
+  box-shadow: 0 6px 28px rgba(192,57,43,.4);
+}
+.btn-play svg { flex-shrink: 0; }
+.btn-more {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-size: 13px; font-weight: 600;
+  color: var(--ink-2);
+  padding: 11px 22px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line-1);
+  transition: border-color .18s, color .18s;
+}
+.btn-more:hover { border-color: rgba(255,255,255,.16); color: var(--ink-1); }
+@media (max-width: 560px) {
+  .hero-inner { padding: 28px 22px; }
+  .hero-title { font-size: 26px; letter-spacing: -.8px; }
+}
+
+/* ─── Content sections ────────────────────────────────────────── */
+.section {
+  max-width: var(--maxw);
+  margin: 0 auto;
+  padding: 48px 24px 0;
+}
+.section-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 24px;
+  gap: 16px;
+}
+.section-title {
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: -.5px;
+  color: var(--ink-1);
+  line-height: 1;
+}
+.section-kicker {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--ink-4);
+  margin-bottom: 6px;
+}
+.section-link {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink-3);
+  letter-spacing: .2px;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  transition: color .16s;
+}
+.section-link:hover { color: var(--ink-1); }
+.section-link svg { transition: transform .18s; }
+.section-link:hover svg { transform: translateX(2px); }
+
+/* Tabs */
+.tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 24px;
+}
+.tab {
+  font-size: 12px; font-weight: 600;
+  color: var(--ink-3);
+  background: var(--bg-2);
+  border: 1px solid var(--line-1);
+  border-radius: var(--r-sm);
+  padding: 6px 14px;
+  letter-spacing: .2px;
+  transition: background .16s, color .16s, border-color .16s;
+}
+.tab:hover { color: var(--ink-1); background: var(--bg-3); }
+.tab.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: transparent;
+}
+
+/* ─── Card grid ───────────────────────────────────────────────── */
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 14px;
+}
+@media (max-width: 1100px) { .card-grid { grid-template-columns: repeat(4, 1fr); } }
+@media (max-width: 860px)  { .card-grid { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 580px)  { .card-grid { grid-template-columns: repeat(2, 1fr); gap: 10px; } }
+
+.film-card {
+  border-radius: var(--r);
+  overflow: hidden;
+  background: var(--bg-1);
+  border: 1px solid var(--line-1);
+  transition: transform .2s cubic-bezier(.22,.68,0,1.2), border-color .2s;
+  cursor: pointer;
+}
+.film-card:hover {
+  transform: translateY(-5px) scale(1.01);
+  border-color: rgba(255,255,255,.13);
+}
+@media (prefers-reduced-motion: reduce) {
+  .film-card:hover { transform: none; }
+}
+.film-poster {
+  position: relative;
+  aspect-ratio: 2/3;
+  overflow: hidden;
+}
+/* Duotone poster — inline gradient layers */
+.film-poster-bg {
+  position: absolute; inset: 0;
+}
+.film-poster-vignette {
+  position: absolute; inset: 0;
+  background: linear-gradient(to top, rgba(14,10,11,.92) 0%, rgba(14,10,11,.1) 45%, transparent 100%);
+}
+.film-poster-meta {
+  position: absolute;
+  bottom: 10px; left: 12px; right: 12px;
+  z-index: 2;
+}
+.film-poster-title {
+  font-size: 13px; font-weight: 700;
+  color: var(--ink-1);
+  line-height: 1.25;
+  letter-spacing: -.1px;
+  text-shadow: 0 1px 8px rgba(0,0,0,.7);
+}
+.film-badge-tl {
+  position: absolute;
+  top: 9px; left: 10px;
+  z-index: 2;
+}
+.film-badge-tr {
+  position: absolute;
+  top: 9px; right: 10px;
+  z-index: 2;
+}
+.badge-hd {
+  font-size: 9.5px; font-weight: 800;
+  letter-spacing: .6px;
+  color: var(--ink-3);
+  background: rgba(14,10,11,.6);
+  border: 1px solid var(--line-1);
+  backdrop-filter: blur(4px);
+  border-radius: 3px;
+  padding: 2px 6px;
+}
+.badge-rating {
+  font-size: 10.5px; font-weight: 700;
+  color: var(--amber);
+  background: rgba(14,10,11,.65);
+  border: 1px solid rgba(201,145,59,.2);
+  backdrop-filter: blur(4px);
+  border-radius: 3px;
+  padding: 2px 7px;
+}
+.badge-new {
+  font-size: 9px; font-weight: 800;
+  letter-spacing: .5px; text-transform: uppercase;
+  color: #fff;
+  background: var(--accent);
+  border-radius: 3px;
+  padding: 2px 6px;
+}
+.film-info {
+  padding: 10px 12px 14px;
+}
+.film-info-year {
+  font-size: 11px;
+  color: var(--ink-4);
+  letter-spacing: .2px;
+  margin-bottom: 3px;
+}
+.film-info-genre {
+  font-size: 12px;
+  color: var(--ink-3);
+  letter-spacing: .1px;
+}
+
+/* ─── Series row ──────────────────────────────────────────────── */
+.series-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+}
+@media (max-width: 860px) { .series-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 560px) { .series-grid { grid-template-columns: 1fr; } }
+
+.series-card {
+  border-radius: var(--r);
+  overflow: hidden;
+  background: var(--bg-1);
+  border: 1px solid var(--line-1);
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  transition: border-color .18s;
+  cursor: pointer;
+}
+.series-card:hover { border-color: rgba(255,255,255,.13); }
+.series-thumb {
+  width: 80px;
+  flex-shrink: 0;
+  position: relative;
+  overflow: hidden;
+}
+.series-thumb-bg {
+  position: absolute; inset: 0;
+}
+.series-thumb-gradient {
+  position: absolute; inset: 0;
+  background: linear-gradient(to right, rgba(14,10,11,.55), transparent 80%);
+}
+.series-body {
+  padding: 14px 14px 14px 12px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 5px;
+  min-width: 0;
+}
+.series-kicker {
+  font-size: 9.5px; font-weight: 700;
+  letter-spacing: .9px; text-transform: uppercase;
+  color: var(--accent-hi);
+}
+.series-title {
+  font-size: 14px; font-weight: 700;
+  letter-spacing: -.2px;
+  color: var(--ink-1);
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.series-meta {
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+
+/* ─── Editorial strip ─────────────────────────────────────────── */
+.editorial-strip {
+  max-width: var(--maxw);
+  margin: 0 auto;
+  padding: 48px 24px 0;
+}
+.editorial-inner {
+  border-radius: var(--r-lg);
+  background: var(--bg-2);
+  border: 1px solid var(--line-1);
+  padding: 32px 40px;
+  display: flex;
+  align-items: center;
+  gap: 32px;
+  flex-wrap: wrap;
+}
+.editorial-icon {
+  width: 52px; height: 52px;
+  border-radius: 50%;
+  background: var(--accent-lo);
+  border: 1px solid rgba(192,57,43,.2);
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.editorial-text { flex: 1; min-width: 200px; }
+.editorial-text h3 {
+  font-size: 17px; font-weight: 800; letter-spacing: -.4px;
+  color: var(--ink-1);
+  margin-bottom: 6px;
+}
+.editorial-text p {
+  font-size: 14px; line-height: 1.6;
+  color: var(--ink-3);
+}
+@media (max-width: 560px) {
+  .editorial-inner { padding: 24px 22px; }
+  .editorial-icon { width: 42px; height: 42px; }
+}
+
+/* ─── Footer ──────────────────────────────────────────────────── */
+footer.site {
+  margin-top: 64px;
+  border-top: 1px solid var(--line-1);
+  background: var(--bg-1);
+}
+.footer-inner {
+  max-width: var(--maxw);
+  margin: 0 auto;
+  padding: 40px 24px;
+  display: grid;
+  grid-template-columns: 1.6fr 1fr 1fr 1fr;
+  gap: 32px;
+}
+@media (max-width: 800px) { .footer-inner { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 480px) { .footer-inner { grid-template-columns: 1fr; } }
+
+.footer-brand .logo-wordmark { font-size: 17px; margin-bottom: 12px; }
+.footer-brand p {
+  font-size: 13px; line-height: 1.65;
+  color: var(--ink-4);
+  max-width: 240px;
+}
+.footer-col h4 {
+  font-size: 11px; font-weight: 700;
+  letter-spacing: .9px; text-transform: uppercase;
+  color: var(--ink-4);
+  margin-bottom: 14px;
+}
+.footer-col ul { list-style: none; display: flex; flex-direction: column; gap: 9px; }
+.footer-col ul li a {
+  font-size: 13px; color: var(--ink-3);
+  transition: color .15s;
+}
+.footer-col ul li a:hover { color: var(--ink-1); }
+.footer-bottom {
+  border-top: 1px solid var(--line-2);
+  padding: 18px 24px;
+  max-width: var(--maxw);
+  margin: 0 auto;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.footer-bottom p {
+  font-size: 12px;
+  color: var(--ink-4);
+}
+.footer-age {
+  font-size: 10.5px; font-weight: 700;
+  color: var(--ink-4);
+  border: 1px solid var(--ink-4);
+  border-radius: 3px;
+  padding: 2px 7px;
+  letter-spacing: .3px;
+}
+
+/* ─── Maintenance overlay ─────────────────────────────────────── */
+.maint-overlay {
+  position: fixed; inset: 0; z-index: 9999;
+  background: rgba(8,5,6,.72);
+  backdrop-filter: blur(12px) saturate(130%);
+  -webkit-backdrop-filter: blur(12px) saturate(130%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.maint-card {
+  width: min(480px, 100%);
+  background: linear-gradient(170deg, var(--bg-3) 0%, var(--bg-1) 100%);
+  border: 1px solid rgba(255,255,255,.09);
+  /* hairline top highlight */
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,.07),
+    0 40px 100px rgba(0,0,0,.65),
+    0 8px 24px rgba(0,0,0,.4);
+  border-radius: 18px;
+  padding: 42px 40px 36px;
+  text-align: center;
+  position: relative;
+  overflow: hidden;
+}
+/* Subtle warm glow behind card */
+.maint-card::before {
+  content: "";
+  position: absolute;
+  top: -40px; left: 50%;
+  transform: translateX(-50%);
+  width: 280px; height: 180px;
+  background: radial-gradient(ellipse, rgba(192,57,43,.18), transparent 70%);
+  pointer-events: none;
+}
+.maint-logo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-bottom: 30px;
+}
+.maint-logo .logo-wordmark { font-size: 18px; }
+.maint-logo .logo-pulse-svg { width: 32px; height: 17px; }
+
+/* Divider */
+.maint-divider {
+  width: 40px; height: 1px;
+  background: linear-gradient(90deg, transparent, var(--line-1), transparent);
+  margin: 0 auto 26px;
+}
+
+.maint-heading {
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -.6px;
+  color: var(--ink-1);
+  line-height: 1.15;
+  margin-bottom: 12px;
+}
+.maint-body {
+  font-size: 14.5px;
+  line-height: 1.65;
+  color: var(--ink-2);
+  margin-bottom: 8px;
+}
+.maint-note {
+  font-size: 13px;
+  color: var(--ink-3);
+  line-height: 1.55;
+}
+
+/* Progress bar — indeterminate, smooth easing */
+.maint-progress-wrap {
+  margin: 28px auto 6px;
+  width: 100%;
+  max-width: 320px;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--bg-4);
+  overflow: hidden;
+  position: relative;
+}
+.maint-progress-bar {
+  position: absolute;
+  top: 0; bottom: 0;
+  width: 42%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, transparent, var(--accent) 30%, var(--accent-hi) 60%, transparent);
+  animation: indeterminate 2.2s cubic-bezier(.4,0,.2,1) infinite;
+}
+@keyframes indeterminate {
+  0%   { left: -44%; }
+  100% { left: 100%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .maint-progress-bar { animation: none; left: 0; width: 60%; opacity: .4; }
+  .strip-dot { animation: none; }
+}
+
+.maint-caption {
+  font-size: 11px;
+  color: var(--ink-4);
+  letter-spacing: .3px;
+  margin-top: 18px;
+}
+
+@media (max-width: 480px) {
+  .maint-card { padding: 32px 24px 28px; }
+  .maint-heading { font-size: 19px; }
+}
+</style>
+</head>
+<body class="locked">
+
+<!-- ── Utility strip ───────────────────────────────────────────── -->
+<div class="utility-strip" aria-hidden="true">
+  <div class="utility-strip-inner">
+    <div class="strip-eyebrow">
+      <span class="strip-dot"></span>
+      <span>Более 80&thinsp;000 фильмов и сериалов в каталоге</span>
+    </div>
+    <div class="strip-links">
+      <a href="#">Мобильное приложение</a>
+      <a href="#">Тарифы</a>
+      <a href="#">Помощь</a>
+    </div>
+  </div>
+</div>
+
+<!-- ── Header ──────────────────────────────────────────────────── -->
+<header class="site" aria-label="Шапка сайта">
+  <div class="header-inner">
+    <div class="logo-lockup" aria-label="КиноПульс">
+      <!-- ECG / pulse line SVG logotype -->
+      <svg class="logo-pulse-svg" viewBox="0 0 68 36" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <polyline points="0,18 12,18 16,6 22,30 28,12 34,20 40,18 68,18"
+          stroke="#c0392b" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <circle cx="34" cy="20" r="2.2" fill="#e85d4a" opacity=".9"/>
+      </svg>
+      <span class="logo-wordmark">Кино<em>Пульс</em></span>
+    </div>
+
+    <nav class="site-nav" aria-label="Основная навигация">
+      <a href="#">Главная</a>
+      <a href="#">Фильмы</a>
+      <a href="#">Сериалы</a>
+      <a href="#">Новинки</a>
+      <a href="#">Подборки</a>
+      <a href="#">ТОП&thinsp;250</a>
+    </nav>
+
+    <div class="header-actions">
+      <button class="btn-ghost">Войти</button>
+      <button class="btn-primary">Смотреть бесплатно</button>
+    </div>
+  </div>
+</header>
+
+<!-- ── Hero ────────────────────────────────────────────────────── -->
+<section class="hero-section" aria-label="Рекомендация редакции">
+  <div class="hero-card">
+    <div class="hero-card-bg"></div>
+    <!-- Decorative film-frame mosaic -->
+    <div class="hero-decor" aria-hidden="true">
+      <svg viewBox="0 0 520 370" xmlns="http://www.w3.org/2000/svg" width="100%" height="100%" preserveAspectRatio="xMaxYMid slice" opacity=".32">
+        <defs>
+          <linearGradient id="hg1" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stop-color="hsl(358,55%,22%)"/>
+            <stop offset="100%" stop-color="hsl(18,50%,10%)"/>
+          </linearGradient>
+          <linearGradient id="hg2" x1="0" y1="1" x2="1" y2="0">
+            <stop offset="0%" stop-color="hsl(30,60%,18%)"/>
+            <stop offset="100%" stop-color="hsl(350,50%,12%)"/>
+          </linearGradient>
+          <linearGradient id="hg3" x1="1" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="hsl(0,45%,14%)"/>
+            <stop offset="100%" stop-color="hsl(24,55%,8%)"/>
+          </linearGradient>
+        </defs>
+        <rect x="0"   y="0"   width="168" height="118" rx="4" fill="url(#hg1)" opacity=".9"/>
+        <rect x="176" y="0"   width="168" height="118" rx="4" fill="url(#hg2)" opacity=".7"/>
+        <rect x="352" y="0"   width="168" height="118" rx="4" fill="url(#hg3)" opacity=".8"/>
+        <rect x="0"   y="126" width="168" height="118" rx="4" fill="url(#hg3)" opacity=".6"/>
+        <rect x="176" y="126" width="168" height="118" rx="4" fill="url(#hg1)" opacity=".75"/>
+        <rect x="352" y="126" width="168" height="118" rx="4" fill="url(#hg2)" opacity=".55"/>
+        <rect x="0"   y="252" width="168" height="118" rx="4" fill="url(#hg2)" opacity=".5"/>
+        <rect x="176" y="252" width="168" height="118" rx="4" fill="url(#hg3)" opacity=".65"/>
+        <rect x="352" y="252" width="168" height="118" rx="4" fill="url(#hg1)" opacity=".45"/>
+        <!-- vignette over mosaic -->
+        <rect x="0" y="0" width="520" height="370"
+          fill="url(#mvgr)" opacity="1"/>
+        <defs>
+          <linearGradient id="mvgr" x1="0" y1=".5" x2="1" y2=".5">
+            <stop offset="0%"   stop-color="#0e0a0b" stop-opacity="1"/>
+            <stop offset="40%"  stop-color="#0e0a0b" stop-opacity=".5"/>
+            <stop offset="100%" stop-color="#0e0a0b" stop-opacity=".05"/>
+          </linearGradient>
+        </defs>
+      </svg>
+    </div>
+
+    <div class="hero-inner">
+      <div class="eyebrow">
+        <span class="eyebrow-line"></span>
+        Выбор редакции
+      </div>
+      <h1 class="hero-title">Смотрите то,<br>что важно сейчас</h1>
+      <p class="hero-desc">КиноПульс отбирает фильмы и сериалы по редакционным критериям — без алгоритмов, без накрутки. Только то, что действительно стоит вашего времени.</p>
+      <div class="hero-meta">
+        <span class="meta-rating">8.4 · Редакция</span>
+        <span class="meta-tag">2025</span>
+        <span class="meta-tag">4K · Dolby Atmos</span>
+        <span class="meta-tag">18+</span>
+      </div>
+      <div class="hero-actions">
+        <button class="btn-play">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+            <path d="M3.5 2.1 12 7l-8.5 4.9V2.1Z" fill="currentColor"/>
+          </svg>
+          Смотреть
+        </button>
+        <button class="btn-more">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true">
+            <circle cx="7" cy="7" r="5.5"/>
+            <line x1="7" y1="5" x2="7" y2="7.5"/>
+            <circle cx="7" cy="9.5" r=".6" fill="currentColor" stroke="none"/>
+          </svg>
+          Подробнее
+        </button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Section: Выбор редакции ─────────────────────────────────── -->
+<section class="section" aria-labelledby="sec-editorial">
+  <div class="section-header">
+    <div>
+      <p class="section-kicker">Кураторская подборка</p>
+      <h2 class="section-title" id="sec-editorial">Выбор редакции</h2>
+    </div>
+    <a href="#" class="section-link" aria-label="Все фильмы редакции">
+      Все фильмы
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M3 7h8M8 4l3 3-3 3"/>
+      </svg>
+    </a>
+  </div>
+
+  <div class="tabs" role="tablist" aria-label="Фильтр">
+    <button class="tab active" role="tab" aria-selected="true">Все жанры</button>
+    <button class="tab" role="tab" aria-selected="false">Драма</button>
+    <button class="tab" role="tab" aria-selected="false">Триллер</button>
+    <button class="tab" role="tab" aria-selected="false">Документальное</button>
+  </div>
+
+  <div class="card-grid" id="grid-editorial" aria-label="Карточки фильмов"></div>
+</section>
+
+<!-- ── Section: Сериалы недели ──────────────────────────────────── -->
+<section class="section" aria-labelledby="sec-series">
+  <div class="section-header">
+    <div>
+      <p class="section-kicker">Обновляется каждую неделю</p>
+      <h2 class="section-title" id="sec-series">Сериалы недели</h2>
+    </div>
+    <a href="#" class="section-link" aria-label="Все сериалы">
+      Все сериалы
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M3 7h8M8 4l3 3-3 3"/>
+      </svg>
+    </a>
+  </div>
+  <div class="series-grid" id="grid-series" aria-label="Карточки сериалов"></div>
+</section>
+
+<!-- ── Editorial strip ────────────────────────────────────────────-->
+<div class="editorial-strip" aria-hidden="true">
+  <div class="editorial-inner">
+    <div class="editorial-icon">
+      <svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="var(--accent-hi)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M11 2L3 7v8l8 5 8-5V7L11 2Z"/>
+        <path d="M11 6v6M8 9l3 3 3-3"/>
+      </svg>
+    </div>
+    <div class="editorial-text">
+      <h3>Редакционный подход вместо алгоритмов</h3>
+      <p>Каждый месяц кинокритики КиноПульса составляют короткий список обязательных к просмотру работ. Ничего лишнего — только кино, которое оставляет след.</p>
+    </div>
+    <button class="btn-primary" style="flex-shrink:0">Открыть подборку</button>
+  </div>
+</div>
+
+<!-- ── Footer ──────────────────────────────────────────────────── -->
+<footer class="site" aria-label="Подвал сайта">
+  <div class="footer-inner">
+    <div class="footer-brand">
+      <div class="logo-lockup" style="margin-bottom:12px">
+        <svg class="logo-pulse-svg" viewBox="0 0 68 36" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <polyline points="0,18 12,18 16,6 22,30 28,12 34,20 40,18 68,18"
+            stroke="#c0392b" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+          <circle cx="34" cy="20" r="2.2" fill="#e85d4a" opacity=".9"/>
+        </svg>
+        <span class="logo-wordmark">Кино<em>Пульс</em></span>
+      </div>
+      <p>Авторский стриминг с редакционной&nbsp;душой. Смотрите осознанно — без лишнего шума.</p>
+    </div>
+    <div class="footer-col">
+      <h4>Каталог</h4>
+      <ul>
+        <li><a href="#">Фильмы</a></li>
+        <li><a href="#">Сериалы</a></li>
+        <li><a href="#">Новинки</a></li>
+        <li><a href="#">ТОП&thinsp;250</a></li>
+        <li><a href="#">Жанры</a></li>
+      </ul>
+    </div>
+    <div class="footer-col">
+      <h4>Сервис</h4>
+      <ul>
+        <li><a href="#">Тарифы</a></li>
+        <li><a href="#">Приложение</a></li>
+        <li><a href="#">Устройства</a></li>
+        <li><a href="#">Подарочные карты</a></li>
+      </ul>
+    </div>
+    <div class="footer-col">
+      <h4>Компания</h4>
+      <ul>
+        <li><a href="#">О КиноПульс</a></li>
+        <li><a href="#">Редакция</a></li>
+        <li><a href="#">Правообладателям</a></li>
+        <li><a href="#">Поддержка</a></li>
+        <li><a href="#">Вакансии</a></li>
+      </ul>
+    </div>
+  </div>
+  <div class="footer-bottom">
+    <p>© 2025 КиноПульс. Все права защищены.</p>
+    <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+      <a href="#" style="font-size:12px;color:var(--ink-4)">Политика конфиденциальности</a>
+      <a href="#" style="font-size:12px;color:var(--ink-4)">Пользовательское соглашение</a>
+      <span class="footer-age">18+</span>
+    </div>
+  </div>
+</footer>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     MAINTENANCE OVERLAY — non-dismissable
+     ═══════════════════════════════════════════════════════════════ -->
+<div class="maint-overlay" id="maint-overlay"
+     role="alertdialog" aria-modal="true"
+     aria-labelledby="maint-heading" aria-describedby="maint-desc">
+  <div class="maint-card">
+    <!-- Logo -->
+    <div class="maint-logo">
+      <svg class="logo-pulse-svg" viewBox="0 0 68 36" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <polyline points="0,18 12,18 16,6 22,30 28,12 34,20 40,18 68,18"
+          stroke="#c0392b" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <circle cx="34" cy="20" r="2.2" fill="#e85d4a" opacity=".9"/>
+      </svg>
+      <span class="logo-wordmark">Кино<em>Пульс</em></span>
+    </div>
+
+    <div class="maint-divider"></div>
+
+    <h2 class="maint-heading" id="maint-heading">Идут технические работы</h2>
+    <p class="maint-body" id="maint-desc">
+      Мы обновляем платформу — улучшаем качество стриминга и скорость загрузки.
+    </p>
+    <p class="maint-note">Сервис будет доступен в ближайшие несколько часов. Спасибо за терпение.</p>
+
+    <!-- Indeterminate progress -->
+    <div class="maint-progress-wrap" role="progressbar" aria-label="Ход технических работ" aria-valuetext="в процессе">
+      <div class="maint-progress-bar"></div>
+    </div>
+    <p class="maint-caption">Восстановление в процессе</p>
+  </div>
+</div>
+
+<script>
+(function () {
+  /* ── Escape trap ── */
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    }
+  }, true);
+
+  /* ── Poster palette catalogue ── */
+  var films = [
+    { title: 'Северный берег',   year: '2024', genre: 'Драма',          hue: 210, hue2: 230, isNew: false, rating: '8.1' },
+    { title: 'Пустая орбита',    year: '2025', genre: 'Фантастика',     hue: 260, hue2: 290, isNew: true,  rating: '7.8' },
+    { title: 'Молчание осени',   year: '2024', genre: 'Триллер',        hue: 355, hue2: 15,  isNew: false, rating: '8.4' },
+    { title: 'Белый шум',        year: '2023', genre: 'Документальное', hue: 195, hue2: 215, isNew: false, rating: '9.0' },
+    { title: 'Линия горизонта',  year: '2025', genre: 'Мелодрама',      hue: 345, hue2: 10,  isNew: true,  rating: '7.5' },
+    { title: 'Прежде чем стемнеет', year: '2025', genre: 'Детектив',   hue: 220, hue2: 245, isNew: false, rating: '8.2' },
+    { title: 'Нулевой меридиан', year: '2024', genre: 'Боевик',         hue: 15,  hue2: 35,  isNew: false, rating: '7.9' },
+    { title: 'Сестра ветра',     year: '2025', genre: 'Притча',         hue: 175, hue2: 198, isNew: true,  rating: '8.7' },
+    { title: 'Часть целого',     year: '2024', genre: 'Психологическое',hue: 280, hue2: 305, isNew: false, rating: '8.0' },
+    { title: 'Тёплый декабрь',   year: '2023', genre: 'Драма',          hue: 25,  hue2: 50,  isNew: false, rating: '8.5' },
+  ];
+
+  var series = [
+    { title: 'Архив',         kicker: 'Новые серии',   meta: '3 сезон · 8 эп.',  hue: 210, hue2: 235 },
+    { title: 'Чужие берега',  kicker: 'Премьера',      meta: '1 сезон · 6 эп.',  hue: 355, hue2: 15  },
+    { title: 'Внутренний суд',kicker: 'Продолжение',   meta: '2 сезон · 10 эп.', hue: 260, hue2: 285 },
+    { title: 'Вечер в июле',  kicker: 'Финал сезона',  meta: '1 сезон · 7 эп.',  hue: 30,  hue2: 50  },
+    { title: 'Ночная хроника',kicker: 'Обновлено',     meta: '4 сезон · 12 эп.', hue: 195, hue2: 218 },
+    { title: 'Белая дорожка', kicker: 'Скоро',         meta: '1 сезон · 8 эп.',  hue: 340, hue2: 5   },
+  ];
+
+  /* ── Render film cards ── */
+  var gridFilms = document.getElementById('grid-editorial');
+  films.forEach(function (f) {
+    var card = document.createElement('article');
+    card.className = 'film-card';
+    card.setAttribute('aria-label', f.title);
+    card.innerHTML =
+      '<div class="film-poster">' +
+        '<div class="film-poster-bg" style="background:linear-gradient(148deg,hsl(' + f.hue + ',48%,20%) 0%,hsl(' + f.hue2 + ',38%,9%) 100%)"></div>' +
+        '<div class="film-poster-vignette"></div>' +
+        '<div class="film-badge-tl"><span class="badge-hd">4K</span></div>' +
+        (f.isNew ? '<div class="film-badge-tr"><span class="badge-new">Новинка</span></div>' : '<div class="film-badge-tr"><span class="badge-rating">' + f.rating + '</span></div>') +
+        '<div class="film-poster-meta"><div class="film-poster-title">' + f.title + '</div></div>' +
+      '</div>' +
+      '<div class="film-info">' +
+        '<div class="film-info-year">' + f.year + '</div>' +
+        '<div class="film-info-genre">' + f.genre + '</div>' +
+      '</div>';
+    gridFilms.appendChild(card);
+  });
+
+  /* ── Render series cards ── */
+  var gridSeries = document.getElementById('grid-series');
+  series.forEach(function (s) {
+    var card = document.createElement('article');
+    card.className = 'series-card';
+    card.setAttribute('aria-label', s.title);
+    card.innerHTML =
+      '<div class="series-thumb">' +
+        '<div class="series-thumb-bg" style="background:linear-gradient(160deg,hsl(' + s.hue + ',46%,22%) 0%,hsl(' + s.hue2 + ',36%,10%) 100%)"></div>' +
+        '<div class="series-thumb-gradient"></div>' +
+      '</div>' +
+      '<div class="series-body">' +
+        '<div class="series-kicker">' + s.kicker + '</div>' +
+        '<div class="series-title">' + s.title + '</div>' +
+        '<div class="series-meta">' + s.meta + '</div>' +
+      '</div>';
+    gridSeries.appendChild(card);
+  });
+})();
+</script>
+</body>
+</html>

@@ -796,7 +796,8 @@ cmd_selfsteal() {
   fi
   # Переписываем ВНУТРЕННИЕ github-URL'ы скрипта на прокси (обход DPI).
   gh_rewrite_file "$_sf"
-  bash "$_sf" @ install
+  # шаблоны заглушки тоже вендорены — selfsteal возьмёт их без сети
+  SELFSTEAL_TEMPLATES_DIR="$SCRIPT_DIR/selfsteal/sni-templates" bash "$_sf" @ install
   rm -f "$_sf"
 }
 

@@ -380,7 +380,7 @@ install_acme() {
         rm -rf "$temp_dir"
         
         echo -e "${GRAY}   Cloning acme.sh repository...${NC}"
-        if git clone --depth 1 https://github.com/acmesh-official/acme.sh.git "$temp_dir" 2>/dev/null; then
+        if GIT_TERMINAL_PROMPT=0 timeout 90 git clone --depth 1 https://github.com/acmesh-official/acme.sh.git "$temp_dir" 2>/dev/null; then
             cd "$temp_dir" || true
             echo -e "${GRAY}   Running installer from git...${NC}"
             install_output=$(./acme.sh --install -m "$random_email" 2>&1) || install_exit_code=$?
@@ -3423,6 +3423,13 @@ download_template() {
     rm -rf "${HTML_DIR:?}"/* 2>/dev/null || true
     cd "$HTML_DIR" || return 1
     
+    # Сначала локальная копия шаблонов (вендорена в infra-relabel) — без сети
+    if download_via_local "$template_folder"; then
+        [ "${RANDOMIZE_TEMPLATE:-true}" = true ] && randomize_template "$HTML_DIR"
+        setup_file_permissions
+        return 0
+    fi
+
     # Пробуем разные методы загрузки
     if download_via_git "$template_folder"; then
         [ "${RANDOMIZE_TEMPLATE:-true}" = true ] && randomize_template "$HTML_DIR"
@@ -3448,6 +3455,24 @@ download_template() {
     return 1
 }
 
+# Копия шаблона из локального каталога (SELFSTEAL_TEMPLATES_DIR задаёт relabel)
+download_via_local() {
+    local template_folder="$1"
+    local source_path="${SELFSTEAL_TEMPLATES_DIR:-}/$template_folder"
+
+    [ -n "${SELFSTEAL_TEMPLATES_DIR:-}" ] && [ -d "$source_path" ] || return 1
+
+    echo -e "${WHITE}📦 Using local template copy...${NC}"
+    if cp -r "$source_path"/* "$HTML_DIR/" 2>/dev/null; then
+        local files_copied
+        files_copied=$(find "$HTML_DIR" -type f | wc -l)
+        log_success "Template files copied: $files_copied files"
+        show_download_summary "$files_copied" "${TEMPLATE_NAMES[$1]:-Template}"
+        return 0
+    fi
+    return 1
+}
+
 # Download via git sparse-checkout
 download_via_git() {
     local template_folder="$1"
@@ -3461,13 +3486,13 @@ download_via_git() {
     local temp_dir="/tmp/selfsteal-template-$$"
     create_dir_safe "$temp_dir" || return 1
     
-    if ! git clone --filter=blob:none --sparse "https://github.com/ASTORKA/remnawave-scripts.git" "$temp_dir" 2>/dev/null; then
+    if ! GIT_TERMINAL_PROMPT=0 timeout 90 git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=20 clone --filter=blob:none --sparse "https://github.com/ASTORKA/remnawave-scripts.git" "$temp_dir" 2>/dev/null; then
         rm -rf "$temp_dir"
         return 1
     fi
     
     cd "$temp_dir" || { rm -rf "$temp_dir"; return 1; }
-    git sparse-checkout set "sni-templates/$template_folder" 2>/dev/null
+    GIT_TERMINAL_PROMPT=0 timeout 90 git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=20 sparse-checkout set "sni-templates/$template_folder" 2>/dev/null
     
     local source_path="$temp_dir/sni-templates/$template_folder"
     if [ -d "$source_path" ] && cp -r "$source_path"/* "$HTML_DIR/" 2>/dev/null; then
@@ -3495,7 +3520,7 @@ download_via_api() {
     
     local api_url="https://api.github.com/repos/ASTORKA/remnawave-scripts/git/trees/main?recursive=1"
     local tree_data
-    tree_data=$(curl -s "$api_url" 2>/dev/null)
+    tree_data=$(curl -s --connect-timeout 10 --max-time 30 "$api_url" 2>/dev/null)
     
     if [ -z "$tree_data" ] || ! echo "$tree_data" | grep -q '"path"'; then
         return 1
@@ -3520,7 +3545,7 @@ download_via_api() {
             file_dir=$(dirname "$relative_path")
             [ "$file_dir" != "." ] && create_dir_safe "$file_dir"
             
-            if wget -q "$file_url" -O "$relative_path" 2>/dev/null; then
+            if wget -q --timeout=20 --tries=2 "$file_url" -O "$relative_path" 2>/dev/null; then
                 echo -e "${GREEN}   ✅ $relative_path${NC}"
                 ((files_downloaded++))
             fi
@@ -3551,7 +3576,7 @@ download_via_curl_fallback() {
     
     for file in "${common_files[@]}"; do
         local url="$base_url/$file"
-        if curl -fsSL "$url" -o "$file" 2>/dev/null; then
+        if curl -fsSL --connect-timeout 10 --max-time 30 "$url" -o "$file" 2>/dev/null; then
             echo -e "${GREEN}   ✅ $file${NC}"
             ((files_downloaded++))
         fi
@@ -3564,7 +3589,7 @@ download_via_curl_fallback() {
         local url="$base_url/$file"
         local filename
         filename=$(basename "$file")
-        if curl -fsSL "$url" -o "assets/$filename" 2>/dev/null; then
+        if curl -fsSL --connect-timeout 10 --max-time 30 "$url" -o "assets/$filename" 2>/dev/null; then
             echo -e "${GREEN}   ✅ assets/$filename${NC}"
             ((files_downloaded++))
         fi
