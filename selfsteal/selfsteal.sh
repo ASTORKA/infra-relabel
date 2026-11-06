@@ -2882,6 +2882,11 @@ install_command() {
 
     # Port configuration (skip for socket mode)
     local port="$DEFAULT_PORT"
+    # Caddy — на 127.0.0.1:443: так target Reality в профилях = 127.0.0.1:443. С Xray на *:443
+    # он уживается (оба с SO_REUSEPORT), соединения на 127.0.0.1 ядро отдаёт Caddy.
+    # Порт 9443 при target 127.0.0.1:443 — петля Reality → Xray (тысячи соединений, 100% CPU).
+    # nginx в TCP-режиме reuseport не ставит — у него остаётся 9443.
+    [ "$WEB_SERVER" = "caddy" ] && port="443"
     
     # Force mode - use provided port if specified
     if [ "$FORCE_MODE" = true ] && [ -n "$FORCE_PORT" ]; then
@@ -2903,7 +2908,7 @@ install_command() {
         echo -e "${GRAY}This port should match your Xray Reality configuration (realitySettings.dest)${NC}"
         echo
         
-        read -p "Enter HTTPS port (default: $DEFAULT_PORT): " input_port
+        read -p "Enter HTTPS port (default: $port): " input_port
         if [ -n "$input_port" ]; then
             port="$input_port"
         fi
@@ -4735,7 +4740,7 @@ show_help() {
     echo -e "${WHITE}Force Install Options:${NC}"
     printf "   ${CYAN}%-22s${NC} %s\n" "--force, -f" "Skip DNS validation and prompts"
     printf "   ${CYAN}%-22s${NC} %s\n" "--domain <domain>" "Domain for installation"
-    printf "   ${CYAN}%-22s${NC} %s\n" "--port <port>" "HTTPS port (default: 9443)"
+    printf "   ${CYAN}%-22s${NC} %s\n" "--port <port>" "HTTPS port (default: Caddy 443, nginx 9443)"
     printf "   ${CYAN}%-22s${NC} %s\n" "--template <1-11>" "Template number to install"
     echo
     echo -e "${WHITE}Manual SSL Certificate:${NC}"
