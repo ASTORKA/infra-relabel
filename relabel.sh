@@ -805,7 +805,10 @@ cmd_selfsteal() {
     valid_domain "$_first" || { rm -f "$_sf"; die "не похоже на домен: $_first"; }
     domains_dns_check "$_first"
     c_grn "· selfsteal без вопросов: домен $_first, случайный шаблон"
-    SELFSTEAL_TEMPLATES_DIR="$SCRIPT_DIR/selfsteal/sni-templates" bash "$_sf" @ --force --domain "$_first" install
+    local _pa=(); [ -n "${SELFSTEAL_PORT:-}" ] && _pa=(--port "$SELFSTEAL_PORT")
+    SELFSTEAL_TEMPLATES_DIR="$SCRIPT_DIR/selfsteal/sni-templates" bash "$_sf" @ --force --domain "$_first" "${_pa[@]}" install
+    c_yel "  ВАЖНО: target Reality-инбаунда в панели = 127.0.0.1:${SELFSTEAL_PORT:-9443} (порт заглушки)."
+    c_yel "  target 127.0.0.1:443 при Xray на 0.0.0.0:443 — петля: Xray шлёт пробы сам себе, тысячи соединений и 100% CPU."
   else
     SELFSTEAL_TEMPLATES_DIR="$SCRIPT_DIR/selfsteal/sni-templates" bash "$_sf" @ install
   fi
@@ -1243,7 +1246,7 @@ cmd_domains() {
   cat <<DOM_EOF
 
 ════ что сделать в панели Remnawave ════
-1) Профиль конфига, Reality-инбаунд на 443 — serverNames (target не трогать):
+1) Профиль конфига, Reality-инбаунд на 443 — target: 127.0.0.1:$(grep -m1 '^SELF_STEAL_PORT=' "$SS_ENV" | cut -d= -f2) (порт заглушки), serverNames:
      $(printf '"%s", ' "${list[@]}" | sed 's/, $//')
    (если используешь хост «IP в SNI» — оставь и "" последним)
 2) На каждый домен — свой хост на этот инбаунд:
