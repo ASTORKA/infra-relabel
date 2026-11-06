@@ -778,7 +778,8 @@ cmd_selfsteal() {
     return 0
   fi
   if [ "$DRY_RUN" = 1 ]; then
-    c_grn "· установить selfsteal (интерактивно — спросит домен)"
+    if [ -n "$OPT_DOMAINS" ]; then c_grn "· установить selfsteal без вопросов: домен $(split_list "$OPT_DOMAINS" | head -1) (--force --domain)"
+    else c_grn "· установить selfsteal (интерактивно — спросит домен)"; fi
     if [ -f "$SELFSTEAL_LOCAL" ]; then c_dim "  [dry] bash <(gh_rewrite $SELFSTEAL_LOCAL) @ install  (локальная копия)"
     else c_dim "  [dry] curl $SELFSTEAL_URL → rewrite → bash @ install"; fi
     return 0
@@ -797,7 +798,17 @@ cmd_selfsteal() {
   # Переписываем ВНУТРЕННИЕ github-URL'ы скрипта на прокси (обход DPI).
   gh_rewrite_file "$_sf"
   # шаблоны заглушки тоже вендорены — selfsteal возьмёт их без сети
-  SELFSTEAL_TEMPLATES_DIR="$SCRIPT_DIR/selfsteal/sni-templates" bash "$_sf" @ install
+  # Домены заданы (--domains / DOMAINS=) — ставим без вопросов: первый домен основной,
+  # остальные добавит relabel domains следом. DNS проверяем сами (force его пропускает).
+  local _first; _first="$(split_list "$OPT_DOMAINS" | head -1)"
+  if [ -n "$_first" ]; then
+    valid_domain "$_first" || { rm -f "$_sf"; die "не похоже на домен: $_first"; }
+    domains_dns_check "$_first"
+    c_grn "· selfsteal без вопросов: домен $_first, случайный шаблон"
+    SELFSTEAL_TEMPLATES_DIR="$SCRIPT_DIR/selfsteal/sni-templates" bash "$_sf" @ --force --domain "$_first" install
+  else
+    SELFSTEAL_TEMPLATES_DIR="$SCRIPT_DIR/selfsteal/sni-templates" bash "$_sf" @ install
+  fi
   rm -f "$_sf"
 }
 
@@ -957,6 +968,11 @@ cmd_all_with_accel() {
   if [ "${EUID:-$(id -u)}" -ne 0 ]; then
     c_yel "ВНИМАНИЕ: selfsteal/optimize/protect требуют root — запусти через sudo, иначе они пропустятся."
   fi
+  # Адреса — первыми: домены заглушки должны указывать на уже повешенные IP,
+  # иначе Let's Encrypt не достучится и сертификат не выпустится.
+  if [ -n "$OPT_IN" ] || [ -n "$OPT_OUT" ]; then
+    echo; c_grn "════ входные/выходные адреса (relabel ips) ════"; cmd_ips
+  fi
   if [ "$NO_SELFSTEAL" = 1 ]; then
     echo; c_yel "════ selfsteal ПРОПУЩЕН (--no-selfsteal): заглушку не ставлю ════"
   else
@@ -990,9 +1006,6 @@ cmd_all_with_accel() {
       run bash "$acc" protect
       echo; c_grn "════ фильтр портов (mobile443 block-only) ════"; cmd_mobile443
     fi
-  fi
-  if [ -n "$OPT_IN" ] || [ -n "$OPT_OUT" ]; then
-    echo; c_grn "════ входные/выходные адреса (relabel ips) ════"; cmd_ips
   fi
   echo; c_grn "════ диагностика (read-only) ════"
   run bash "$acc" diagnose
@@ -1152,24 +1165,35 @@ env_set() {
   cat "$tmp" > "$f"; rm -f "$tmp"
 }
 
-cmd_domains() {
-  local list=() d
-  while IFS= read -r d; do [ -n "$d" ] && list+=("$(printf '%s' "$d" | tr 'A-Z' 'a-z')"); done < <(split_list "$OPT_DOMAINS")
-  [ "${#list[@]}" -gt 0 ] || die "укажи домены: relabel domains d1.example.com d2.example.org …"
-  for d in "${list[@]}"; do valid_domain "$d" || die "не похоже на домен: $d"; done
-  find_caddy_selfsteal || die "Caddy-заглушка selfsteal не найдена (nginx-вариант не поддерживается) — сначала: relabel selfsteal"
-  [ "${EUID:-$(id -u)}" -eq 0 ] || c_yel "ВНИМАНИЕ: без root правка Caddyfile/.env может не пройти."
-
+# Домены должны резолвиться в адреса этого сервера (с учётом ещё не повешенных --in/--out).
+domains_dns_check() {
   echo; c_grn "════ DNS: домены должны указывать на этот сервер ════"
-  local mine bad=0 a ok
-  mine="$(host_ipv4s)"
-  for d in "${list[@]}"; do
+  local mine bad=0 a ok d x
+  mine="$(host_ipv4s; split_list "$OPT_IN"; split_list "$OPT_OUT")"
+  for d in "$@"; do
     a="$(resolve_a "$d" | tr '\n' ' ' || true)"; ok=0
     for x in $a; do printf '%s\n' "$mine" | grep -qx "$x" && ok=1; done
     if [ "$ok" = 1 ]; then echo "  $d → ${a% }  ✓"
     else c_yel "  $d → ${a:-нет A-записи}  ✗ (не адрес этого сервера — сертификат не выпустится)"; bad=1; fi
   done
-  [ "$bad" = 0 ] || [ "${FORCE:-0}" = 1 ] || die "исправь DNS (или FORCE=1 relabel domains …, если A-записи ещё расходятся)"
+  [ "$bad" = 0 ] || [ "${FORCE:-0}" = 1 ] || die "исправь DNS (или FORCE=1, если A-записи ещё расходятся)"
+}
+
+cmd_domains() {
+  local list=() d
+  while IFS= read -r d; do [ -n "$d" ] && list+=("$(printf '%s' "$d" | tr 'A-Z' 'a-z')"); done < <(split_list "$OPT_DOMAINS")
+  [ "${#list[@]}" -gt 0 ] || die "укажи домены: relabel domains d1.example.com d2.example.org …"
+  for d in "${list[@]}"; do valid_domain "$d" || die "не похоже на домен: $d"; done
+  if ! find_caddy_selfsteal; then
+    if [ "$DRY_RUN" = 1 ]; then
+      c_dim "  [dry] заглушки ещё нет — после установки: домены ${list[*]} в Caddyfile/.env, пересоздание, проверка сертификатов"
+      return 0
+    fi
+    die "Caddy-заглушка selfsteal не найдена (nginx-вариант не поддерживается) — сначала: relabel selfsteal"
+  fi
+  [ "${EUID:-$(id -u)}" -eq 0 ] || c_yel "ВНИМАНИЕ: без root правка Caddyfile/.env может не пройти."
+
+  domains_dns_check "${list[@]}"
 
   local http="" https="" main="${list[0]}"
   for d in "${list[@]}"; do http="${http:+$http, }http://$d"; https="${https:+$https, }https://$d"; done
@@ -1372,7 +1396,8 @@ relabel.sh — маскировка имён docker-контейнеров VPN-�
   relabel all-with-accelerator [--dry-run] [--no-mask] [--no-selfsteal] [--no-block] [--no-antiscan]  (root!)
                                [--domains d1,d2] [--in A1,A2] [--out B] [--ports 443]
                                selfsteal+маскирование+optimize+protect+mobile443+sysmgr
-                               (+ domains/ips, если заданы --domains / --in / --out)
+                               (+ domains/ips, если заданы --domains / --in / --out;
+                                то же через ENV: DOMAINS, IN_IPS, OUT_IP, VPN_PORTS)
                                --no-mask: не переименовывать; --no-selfsteal: не ставить заглушку
                                --no-block: без блокировщиков (protect + mobile443)
                                --no-antiscan: protect без portscan-бана и CrowdSec, без mobile443
@@ -1437,6 +1462,11 @@ while [ "$_i" -lt "${#_args[@]}" ]; do
   esac
   _i=$((_i + 1))
 done
+# То же через переменные окружения (удобно в одной команде с SSH_PORT=… TCP_PORTS=…).
+OPT_DOMAINS="${OPT_DOMAINS:-${DOMAINS:-}}"
+OPT_IN="${OPT_IN:-${IN_IPS:-}}"
+OPT_OUT="${OPT_OUT:-${OUT_IP:-}}"
+OPT_PORTS="${OPT_PORTS:-${VPN_PORTS:-}}"
 # relabel domains d1 d2 … — домены позиционно
 if [ "${_pos[0]:-}" = domains ] && [ "${#_pos[@]}" -gt 1 ]; then
   OPT_DOMAINS="${OPT_DOMAINS:+$OPT_DOMAINS,}$(IFS=,; echo "${_pos[*]:1}")"

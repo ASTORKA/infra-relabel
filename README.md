@@ -339,9 +339,18 @@ relabel ips --in 91.236.230.117,91.236.230.114 --out 92.118.126.252
   сервере есть IPv6 по умолчанию — предупредит (сайты с IPv6 увидят его).
 - Откат: `relabel ips-restore` (адреса, повешенные вручную, не снимает).
 
-Обе команды есть и в установке одной командой:
-`relabel all-with-accelerator --domains d1,d2 --in A1,A2 --out B`
-(домены — после selfsteal, адреса — после firewall).
+Обе команды есть и в установке одной командой — флагами или через ENV
+(`DOMAINS`, `IN_IPS`, `OUT_IP`, `VPN_PORTS`). С доменами selfsteal ставится
+**без вопросов** (первый домен основной, шаблон случайный), остальные домены
+добавляются следом; адреса настраиваются самыми первыми, чтобы сертификаты
+выпустились на уже повешенные IP:
+
+```bash
+git clone https://github.com/ASTORKA/infra-relabel /opt/infra-relabel && cd /opt/infra-relabel && ./install.sh && \
+SSH_PORT=22 TCP_PORTS=443 UDP_PORTS=443 NODE_PORT=2222 WHITELIST="<IP панели>" NONINTERACTIVE=1 \
+DOMAINS="d1.example.com,d2.example.org" IN_IPS="A1,A2" OUT_IP="B" \
+relabel all-with-accelerator --no-mask --no-antiscan
+```
 
 В панели: хосты только на входные адреса/их домены; выходной адрес не
 указывать ни в хостах, ни в DNS доменов заглушки.
