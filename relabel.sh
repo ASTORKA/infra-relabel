@@ -962,6 +962,9 @@ cmd_all_with_accel() {
   else
     echo; c_grn "════ selfsteal (маскирующий сайт) ════"; cmd_selfsteal
   fi
+  if [ -n "$OPT_DOMAINS" ]; then
+    echo; c_grn "════ домены заглушки (relabel domains) ════"; cmd_domains
+  fi
   if [ "$NO_MASK" = 1 ]; then
     echo; c_yel "════ маскировка ПРОПУЩЕНА (--no-mask): ничего не переименовываю ════"
   else
@@ -987,6 +990,9 @@ cmd_all_with_accel() {
       run bash "$acc" protect
       echo; c_grn "════ фильтр портов (mobile443 block-only) ════"; cmd_mobile443
     fi
+  fi
+  if [ -n "$OPT_IN" ] || [ -n "$OPT_OUT" ]; then
+    echo; c_grn "════ входные/выходные адреса (relabel ips) ════"; cmd_ips
   fi
   echo; c_grn "════ диагностика (read-only) ════"
   run bash "$acc" diagnose
@@ -1062,6 +1068,301 @@ cmd_uninstall() {
   c_dim "  • каталог репозитория:  rm -rf $SCRIPT_DIR"
 }
 
+# --- несколько доменов у заглушки + входные/выходные IP ----------------------
+#
+# relabel domains d1 [d2 ...]   — заглушка selfsteal (Caddy) обслуживает сразу все
+#   домены: на каждый свой сертификат (Let's Encrypt по HTTP-01 на :80), редирект
+#   http→https, тот же сайт. Первый домен — основной (default_sni для «IP в SNI»).
+#   Список хранится в .env (SELF_STEAL_DOMAINS + готовые адреса сайтов); Caddy
+#   подставляет {$VAR} до разбора Caddyfile, так что адресов может быть сколько угодно.
+#
+# relabel ips --in A1,A2 --out B [--ports 443,8443]
+#   --in   адреса, на которые подключаются пользователи: VPN-порты (--ports) отвечают
+#          ТОЛЬКО на них, на остальных IP сервера дропаются (засвеченный/забаненный IP
+#          перестаёт быть VPN). Порт панели (2222) и SSH не трогаются.
+#   --out  адрес, с которого нода ходит в интернет (его видят сайты): SNAT новых
+#          исходящих соединений с адресов сервера на B. В панели ничего менять не нужно
+#          (аналог sendThrough в outbound «DIRECT»).
+#   Недостающие адреса из --in/--out вешаются на внешний интерфейс (/32).
+#   Всё переживает перезагрузку (systemd-юнит relabel-ips), откат: relabel ips-restore.
+
+IPS_DIR="/etc/relabel-ips"
+IPS_UNIT="/etc/systemd/system/relabel-ips.service"
+IPS_STATE_FILE="$STATE_DIR/ips.added"   # адреса, которые повесили мы (снимем при откате)
+
+# Значения флагов вида --x a,b или --x=a,b (заполняются в точке входа).
+OPT_DOMAINS=""; OPT_IN=""; OPT_OUT=""; OPT_PORTS=""
+
+valid_ipv4() {
+  local ip="$1" o
+  [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || return 1
+  local IFS=.; for o in $ip; do [ "$o" -le 255 ] || return 1; done
+}
+valid_domain() { [[ "$1" =~ ^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}$ ]]; }
+
+# Список через запятые/пробелы → по строке.
+split_list() { printf '%s\n' "$*" | tr ', ' '\n\n' | sed '/^$/d'; }
+
+host_ipv4s() { ip -4 -o addr show scope global 2>/dev/null | awk '{sub(/\/.*/, "", $4); print $4}'; }
+default_iface() { ip -4 route show default 2>/dev/null | awk '{for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit }}'; }
+
+resolve_a() {
+  if command -v dig >/dev/null 2>&1; then dig +short A "$1" @1.1.1.1 2>/dev/null | grep -E '^[0-9.]+$'
+  else getent ahostsv4 "$1" 2>/dev/null | awk '{print $1}' | sort -u; fi
+}
+
+# Найти Caddy-заглушку: имя контейнера, каталог compose, Caddyfile, .env.
+find_caddy_selfsteal() {
+  SS_C=""; local n
+  for n in web-frontend caddy-selfsteal; do
+    docker container inspect "$n" >/dev/null 2>&1 && { SS_C="$n"; break; }
+  done
+  [ -n "$SS_C" ] || return 1
+  SS_CF="$(docker container inspect -f '{{range .Mounts}}{{if eq .Destination "/etc/caddy/Caddyfile"}}{{.Source}}{{end}}{{end}}' "$SS_C")"
+  SS_WD="$(docker container inspect -f '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' "$SS_C" 2>/dev/null || true)"
+  SS_CFGS="$(docker container inspect -f '{{index .Config.Labels "com.docker.compose.project.config_files"}}' "$SS_C" 2>/dev/null || true)"
+  SS_SVC="$(docker container inspect -f '{{index .Config.Labels "com.docker.compose.service"}}' "$SS_C" 2>/dev/null || true)"
+  [ -n "$SS_CF" ] && [ -f "$SS_CF" ] || return 1
+  SS_ENV="$(dirname "$SS_CF")/.env"
+  [ -f "$SS_ENV" ] || SS_ENV="$SS_WD/.env"
+  [ -f "$SS_ENV" ]
+}
+
+# Один раз переводим Caddyfile на адреса из .env (идемпотентно).
+patch_caddyfile_domains() {
+  local f="$1" tmp
+  tmp="$(mktemp)"
+  awk '
+    $0 ~ /^http:\/\/\{\$SELF_STEAL_DOMAIN\} \{/  { print "{$SELF_STEAL_SITES_HTTP} {"; next }
+    $0 ~ /^https:\/\/\{\$SELF_STEAL_DOMAIN\} \{/ { print "{$SELF_STEAL_SITES_HTTPS} {"; next }
+    $1 == "redir" && $2 ~ /^https:\/\/\{\$SELF_STEAL_DOMAIN\}/ {
+      ind = $0; sub(/[^ \t].*$/, "", ind); print ind "redir https://{host}{uri} permanent"; next
+    }
+    { print }
+  ' "$f" > "$tmp" && cat "$tmp" > "$f"
+  rm -f "$tmp"
+}
+
+# Записать/заменить KEY=VALUE в .env.
+env_set() {
+  local f="$1" k="$2" v="$3" tmp
+  tmp="$(mktemp)"
+  grep -v "^${k}=" "$f" > "$tmp" || true
+  printf '%s=%s\n' "$k" "$v" >> "$tmp"
+  cat "$tmp" > "$f"; rm -f "$tmp"
+}
+
+cmd_domains() {
+  local list=() d
+  while IFS= read -r d; do [ -n "$d" ] && list+=("$(printf '%s' "$d" | tr 'A-Z' 'a-z')"); done < <(split_list "$OPT_DOMAINS")
+  [ "${#list[@]}" -gt 0 ] || die "укажи домены: relabel domains d1.example.com d2.example.org …"
+  for d in "${list[@]}"; do valid_domain "$d" || die "не похоже на домен: $d"; done
+  find_caddy_selfsteal || die "Caddy-заглушка selfsteal не найдена (nginx-вариант не поддерживается) — сначала: relabel selfsteal"
+  [ "${EUID:-$(id -u)}" -eq 0 ] || c_yel "ВНИМАНИЕ: без root правка Caddyfile/.env может не пройти."
+
+  echo; c_grn "════ DNS: домены должны указывать на этот сервер ════"
+  local mine bad=0 a ok
+  mine="$(host_ipv4s)"
+  for d in "${list[@]}"; do
+    a="$(resolve_a "$d" | tr '\n' ' ' || true)"; ok=0
+    for x in $a; do printf '%s\n' "$mine" | grep -qx "$x" && ok=1; done
+    if [ "$ok" = 1 ]; then echo "  $d → ${a% }  ✓"
+    else c_yel "  $d → ${a:-нет A-записи}  ✗ (не адрес этого сервера — сертификат не выпустится)"; bad=1; fi
+  done
+  [ "$bad" = 0 ] || [ "${FORCE:-0}" = 1 ] || die "исправь DNS (или FORCE=1 relabel domains …, если A-записи ещё расходятся)"
+
+  local http="" https="" main="${list[0]}"
+  for d in "${list[@]}"; do http="${http:+$http, }http://$d"; https="${https:+$https, }https://$d"; done
+  if grep -q '/etc/caddy/ssl/fullchain.crt' "$SS_CF"; then
+    c_yel "· заглушка на ручном сертификате (ssl/fullchain.crt) — он должен покрывать ВСЕ домены (wildcard/SAN)"
+  fi
+
+  c_grn "· Caddyfile ($SS_CF) и .env: домены ${list[*]}"
+  run mkdir -p "$BACKUP_DIR"
+  local ts; ts="$(date +%s)"
+  run cp -a "$SS_CF" "$BACKUP_DIR/Caddyfile.$ts"
+  run cp -a "$SS_ENV" "$BACKUP_DIR/selfsteal.env.$ts"
+  run patch_caddyfile_domains "$SS_CF"
+  run env_set "$SS_ENV" SELF_STEAL_DOMAIN "$main"
+  run env_set "$SS_ENV" SELF_STEAL_DOMAINS "$(IFS=,; echo "${list[*]}")"
+  run env_set "$SS_ENV" SELF_STEAL_SITES_HTTP "$http"
+  run env_set "$SS_ENV" SELF_STEAL_SITES_HTTPS "$https"
+  [ "$DRY_RUN" = 1 ] && { c_dim "  [dry] пересоздать $SS_C (env_file перечитывается только при up)"; return 0; }
+
+  # env_file читается при создании контейнера → нужен up (restart не подхватит .env).
+  if [ -n "$SS_WD" ] && [ -n "$SS_SVC" ] && [ -n "$SS_CFGS" ]; then
+    compose_up "$SS_SVC" "$SS_WD" "$SS_CFGS"
+  else
+    die "не нашёл compose-метки у $SS_C — пересоздай заглушку вручную: cd <каталог> && docker compose up -d"
+  fi
+
+  echo; c_grn "════ проверка: сертификаты через 443 (Reality → заглушка) ════"
+  local lip t subj left=("${list[@]}")
+  lip="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i = 1; i < NF; i++) if ($i == "src") { print $(i + 1); exit }}')"
+  for t in $(seq 1 18); do      # Caddy выпускает сертификаты в фоне — ждём до ~90 с
+    local rest=()
+    for d in "${left[@]}"; do
+      subj="$(timeout 8 openssl s_client -connect "${lip:-127.0.0.1}:443" -servername "$d" </dev/null 2>/dev/null \
+        | openssl x509 -noout -subject -enddate 2>/dev/null | tr '\n' ' ' || true)"
+      if printf '%s' "$subj" | grep -q "CN *= *$d"; then echo "  $d  ✓  ${subj#*notAfter=}"; else rest+=("$d"); fi
+    done
+    left=("${rest[@]}"); [ "${#left[@]}" -eq 0 ] && break
+    sleep 5
+  done
+  for d in "${left[@]}"; do
+    c_yel "  $d  ✗ сертификата нет: проверь, что :80 открыт снаружи и A-запись верна; docker logs $SS_C | grep -i acme"
+  done
+
+  cat <<DOM_EOF
+
+════ что сделать в панели Remnawave ════
+1) Профиль конфига, Reality-инбаунд на 443 — serverNames (target не трогать):
+     $(printf '"%s", ' "${list[@]}" | sed 's/, $//')
+   (если используешь хост «IP в SNI» — оставь и "" последним)
+2) На каждый домен — свой хост на этот инбаунд:
+DOM_EOF
+  for d in "${list[@]}"; do echo "     Address: $d   Port: 443   SNI: $d"; done
+  echo
+}
+
+# Сгенерировать /etc/relabel-ips/{ips.nft,apply.sh} и юнит; применить.
+cmd_ips() {
+  [ "${EUID:-$(id -u)}" -eq 0 ] || [ "$DRY_RUN" = 1 ] || die "relabel ips требует root"
+  command -v nft >/dev/null 2>&1 || [ "$DRY_RUN" = 1 ] || die "нужен nftables (apt install nftables)"
+  local ins=() outs=() ports=() x
+  while IFS= read -r x; do [ -n "$x" ] && ins+=("$x"); done < <(split_list "$OPT_IN")
+  while IFS= read -r x; do [ -n "$x" ] && outs+=("$x"); done < <(split_list "$OPT_OUT")
+  while IFS= read -r x; do [ -n "$x" ] && ports+=("$x"); done < <(split_list "${OPT_PORTS:-443}")
+  [ "${#ins[@]}" -gt 0 ] || [ "${#outs[@]}" -gt 0 ] || die "укажи --in A1,A2 и/или --out B (см. relabel --help)"
+  [ "${#outs[@]}" -le 1 ] || die "--out — один адрес"
+  for x in "${ins[@]}" "${outs[@]}"; do valid_ipv4 "$x" || die "не IPv4: $x"; done
+  for x in "${ports[@]}"; do [[ "$x" =~ ^[0-9]{1,5}(-[0-9]{1,5})?$ ]] || die "не порт: $x"; done
+  for x in "${ports[@]}"; do [ "$x" != 22 ] || die "порт 22 в --ports нельзя — потеряешь SSH"; done
+
+  local ifc; ifc="$(default_iface)"
+  [ -n "$ifc" ] || die "не определил внешний интерфейс (нет default route)"
+  local mine; mine="$(host_ipv4s)"
+
+  echo; c_grn "════ адреса на $ifc ════"
+  local add=()
+  for x in "${ins[@]}" "${outs[@]}"; do
+    if printf '%s\n' "$mine" | grep -qx "$x"; then echo "  $x  уже на сервере"
+    else echo "  $x  + повешу /32"; add+=("$x"); fi
+  done
+
+  local out="${outs[0]:-}" pl inl
+  pl="$(IFS=,; echo "${ports[*]}" | sed 's/,/, /g')"
+  inl="$(IFS=,; echo "${ins[*]}" | sed 's/,/, /g')"
+
+  # источники для SNAT: все адреса сервера, кроме выходного
+  local srcs=""
+  [ -n "$out" ] && srcs="$(printf '%s\n' $mine "${add[@]}" | sed '/^$/d' | sort -u | grep -vx "$out" | paste -sd, - | sed 's/,/, /g' || true)"
+  local nft; nft="$(mktemp)"
+  {
+    echo "#!/usr/sbin/nft -f"
+    echo "# relabel ips — вход: ${ins[*]:-любой}; выход: ${out:-как есть}; VPN-порты: ${ports[*]}"
+    echo "table inet relabel_ips {}"
+    echo "delete table inet relabel_ips"
+    echo "table inet relabel_ips {"
+    if [ "${#ins[@]}" -gt 0 ]; then
+      echo "  chain input {"
+      echo "    type filter hook input priority -5; policy accept;"
+      echo "    # VPN-порты отвечают только на входных адресах; loopback (заглушка) не трогаем"
+      echo "    ip daddr != { $inl, 127.0.0.0/8 } tcp dport { $pl } drop"
+      echo "    ip daddr != { $inl, 127.0.0.0/8 } udp dport { $pl } drop"
+      echo "  }"
+    fi
+    if [ -n "$out" ]; then
+      echo "  chain postrouting {"
+      echo "    type nat hook postrouting priority srcnat + 5; policy accept;"
+      echo "    # новые исходящие с адресов сервера → выходной адрес (ответы на входящие не трогаются)"
+      [ -n "$srcs" ] && echo "    oifname \"$ifc\" ip saddr { $srcs } snat ip to $out"
+      echo "  }"
+    fi
+    echo "}"
+  } > "$nft"
+
+  if [ "$DRY_RUN" = 1 ]; then
+    c_dim "  [dry] ip addr add <адрес>/32 dev $ifc  для: ${add[*]:-—}"
+    c_dim "  [dry] nft -f $IPS_DIR/ips.nft:"; sed 's/^/    /' "$nft"
+    c_dim "  [dry] systemd-юнит relabel-ips (адреса + nft при загрузке)"
+    rm -f "$nft"; return 0
+  fi
+
+  nft -c -f "$nft" || { rm -f "$nft"; die "nft отверг правила (см. выше) — ничего не применено"; }
+  mkdir -p "$IPS_DIR"
+  install -m 0644 "$nft" "$IPS_DIR/ips.nft"; rm -f "$nft"
+  cat > "$IPS_DIR/apply.sh" <<APPLY_EOF
+#!/bin/sh
+# сгенерировано relabel ips; адреса + правила nft
+IFC="\$(ip -4 route show default | awk '{for (i = 1; i < NF; i++) if (\$i == "dev") { print \$(i + 1); exit }}')"
+for a in $(printf '%s ' "${ins[@]}" "${outs[@]}"); do
+  ip -4 addr show dev "\$IFC" | grep -q " \$a/" || ip addr add "\$a/32" dev "\$IFC"
+done
+/usr/sbin/nft -f $IPS_DIR/ips.nft
+APPLY_EOF
+  chmod 0755 "$IPS_DIR/apply.sh"
+  cat > "$IPS_UNIT" <<UNIT_EOF
+[Unit]
+Description=relabel ips: входные/выходные адреса ноды
+After=network-online.target nftables.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=$IPS_DIR/apply.sh
+ExecStop=/usr/sbin/nft delete table inet relabel_ips
+
+[Install]
+WantedBy=multi-user.target
+UNIT_EOF
+  for x in "${add[@]}"; do grep -qx "$x" "$IPS_STATE_FILE" 2>/dev/null || echo "$x" >> "$IPS_STATE_FILE"; done
+  systemctl daemon-reload
+  systemctl enable relabel-ips.service >/dev/null 2>&1
+  systemctl restart relabel-ips.service || die "relabel-ips не применился: journalctl -u relabel-ips"
+  c_grn "· применено: юнит relabel-ips, правила $IPS_DIR/ips.nft"
+
+  echo; c_grn "════ проверка ════"
+  ip -4 -br addr show dev "$ifc" | sed 's/^/  /'
+  if [ -n "$out" ]; then
+    local seen; seen="$(curl -4 -fsS --max-time 8 https://api.ipify.org 2>/dev/null || true)"
+    if [ "$seen" = "$out" ]; then c_grn "  сайты видят $seen ✓"; else c_yel "  сайты видят ${seen:-нет ответа} (ожидался $out) — хостер мог не пускать $out через общий шлюз"; fi
+  fi
+  if ip -6 route show default 2>/dev/null | grep -q .; then
+    c_yel "  ВНИМАНИЕ: на сервере есть IPv6 по умолчанию — сайты с IPv6 увидят его, а не $out."
+    c_dim "  Не нужен IPv6 наружу — отключи его исходящие или задай domainStrategy UseIPv4 в outbound."
+  fi
+  [ "${#ins[@]}" -gt 0 ] && c_dim "  VPN-порты ${ports[*]} отвечают только на: ${ins[*]}"
+  cat <<IPS_EOF
+
+════ в панели Remnawave ════
+  Хосты — только на входные адреса (${ins[*]:-как есть}) или их домены.
+  Выходной адрес${out:+ $out} нигде не указывать: ни в хостах, ни в DNS доменов заглушки.
+  Откат: relabel ips-restore
+IPS_EOF
+}
+
+cmd_ips_restore() {
+  [ "${EUID:-$(id -u)}" -eq 0 ] || [ "$DRY_RUN" = 1 ] || die "relabel ips-restore требует root"
+  c_grn "· снимаю relabel-ips (правила nft, юнит)"
+  run systemctl disable --now relabel-ips.service 2>/dev/null || true
+  run nft delete table inet relabel_ips 2>/dev/null || true
+  run rm -f "$IPS_UNIT"
+  run rm -rf "$IPS_DIR"
+  [ "$DRY_RUN" = 1 ] || systemctl daemon-reload
+  local ifc x; ifc="$(default_iface)"
+  if [ -f "$IPS_STATE_FILE" ]; then
+    while IFS= read -r x; do
+      [ -n "$x" ] || continue
+      c_dim "  снимаю адрес $x (вешали мы)"
+      run ip addr del "$x/32" dev "$ifc" 2>/dev/null || true
+    done < "$IPS_STATE_FILE"
+    run rm -f "$IPS_STATE_FILE"
+  fi
+  c_grn "Откат ips завершён (адреса, повешенные вручную, не тронуты)."
+}
+
 usage() {
   cat <<'EOF'
 relabel.sh — маскировка имён docker-контейнеров VPN-ноды
@@ -1069,7 +1370,9 @@ relabel.sh — маскировка имён docker-контейнеров VPN-�
 ОДНОЙ КОМАНДОЙ:
   relabel all [--dry-run]      применить ВСЁ маскирование (A→B→C→D)
   relabel all-with-accelerator [--dry-run] [--no-mask] [--no-selfsteal] [--no-block] [--no-antiscan]  (root!)
+                               [--domains d1,d2] [--in A1,A2] [--out B] [--ports 443]
                                selfsteal+маскирование+optimize+protect+mobile443+sysmgr
+                               (+ domains/ips, если заданы --domains / --in / --out)
                                --no-mask: не переименовывать; --no-selfsteal: не ставить заглушку
                                --no-block: без блокировщиков (protect + mobile443)
                                --no-antiscan: protect без portscan-бана и CrowdSec, без mobile443
@@ -1088,6 +1391,12 @@ relabel.sh — маскировка имён docker-контейнеров VPN-�
   relabel mobile443 [--dry-run] фильтр портов: дроп blocklist'ов, block-only (root)
   relabel ipfilter [--dry-run]  блок подсетей сканеров на весь сервер, меню `ipfilter` (root)
   relabel ipsni [--dry-run]     заглушка под хост «IP в SNI + фрагментация» + проверка (root)
+  relabel domains d1 [d2 …] [--dry-run]
+                               заглушка на несколько доменов (свой сертификат на каждый) + проверка
+  relabel ips [--in A1,A2] [--out B] [--ports 443,8443] [--dry-run]   (root)
+                               вход только на A1/A2 (VPN-порты на прочих IP дропаются),
+                               выход в интернет с B (SNAT); недостающие IP вешает сам
+  relabel ips-restore [--dry-run]  снять правила/юнит ips и повешенные им адреса
   relabel ps                   показать процессы внутри контейнеров
 
 ОТКАТ ПО ШАГАМ:  restore / images-restore / project-restore /
@@ -1103,15 +1412,36 @@ EOF
 # --- точка входа ------------------------------------------------------------
 
 need_docker
-for _a in "$@"; do
+_args=("$@"); _pos=()
+_i=0
+while [ "$_i" -lt "${#_args[@]}" ]; do
+  _a="${_args[$_i]}"; _v="${_args[$((_i + 1))]:-}"
   case "$_a" in
     --dry-run) DRY_RUN=1 ;;
     --no-mask) NO_MASK=1 ;;
     --no-selfsteal) NO_SELFSTEAL=1 ;;
     --no-block|--no-firewall) NO_BLOCK=1 ;;
     --no-antiscan) NO_ANTISCAN=1 ;;
+    --domains=*) OPT_DOMAINS="${_a#*=}" ;;
+    --in=*)      OPT_IN="${_a#*=}" ;;
+    --out=*)     OPT_OUT="${_a#*=}" ;;
+    --ports=*)   OPT_PORTS="${_a#*=}" ;;
+    --domains|--in|--out|--ports)
+      case "$_v" in ""|--*) die "$_a: нужно значение" ;; esac
+      case "$_a" in
+        --domains) OPT_DOMAINS="$_v" ;; --in) OPT_IN="$_v" ;;
+        --out) OPT_OUT="$_v" ;; --ports) OPT_PORTS="$_v" ;;
+      esac
+      _i=$((_i + 1)) ;;
+    *) _pos+=("$_a") ;;
   esac
+  _i=$((_i + 1))
 done
+# relabel domains d1 d2 … — домены позиционно
+if [ "${_pos[0]:-}" = domains ] && [ "${#_pos[@]}" -gt 1 ]; then
+  OPT_DOMAINS="${OPT_DOMAINS:+$OPT_DOMAINS,}$(IFS=,; echo "${_pos[*]:1}")"
+fi
+set -- "${_pos[@]}"
 case "${1:-}" in
   status)            cmd_status ;;
   all)               cmd_all ;;
@@ -1133,6 +1463,9 @@ case "${1:-}" in
   mobile443)         cmd_mobile443 ;;
   ipfilter)          cmd_ipfilter ;;
   ipsni)             cmd_ipsni ;;
+  domains)           cmd_domains ;;
+  ips)               cmd_ips ;;
+  ips-restore)       cmd_ips_restore ;;
   ps)                cmd_ps ;;
   ""|-h|--help|help) usage ;;
   *) die "неизвестная команда: $1 (см. --help)" ;;
