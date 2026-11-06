@@ -1221,12 +1221,15 @@ cmd_domains() {
   fi
 
   echo; c_grn "════ проверка: сертификаты через 443 (Reality → заглушка) ════"
-  local lip t subj left=("${list[@]}")
+  # Стучимся на адрес САМОГО домена: после `relabel ips` 443 на прочих IP сервера
+  # (в т.ч. основном) дропается, и проверка через него висела бы до таймаута.
+  local lip t subj dip left=("${list[@]}")
   lip="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i = 1; i < NF; i++) if ($i == "src") { print $(i + 1); exit }}')"
   for t in $(seq 1 18); do      # Caddy выпускает сертификаты в фоне — ждём до ~90 с
     local rest=()
     for d in "${left[@]}"; do
-      subj="$(timeout 8 openssl s_client -connect "${lip:-127.0.0.1}:443" -servername "$d" </dev/null 2>/dev/null \
+      dip="$(resolve_a "$d" | head -1 || true)"
+      subj="$(timeout 5 openssl s_client -connect "${dip:-${lip:-127.0.0.1}}:443" -servername "$d" </dev/null 2>/dev/null \
         | openssl x509 -noout -subject -enddate 2>/dev/null | tr '\n' ' ' || true)"
       if printf '%s' "$subj" | grep -q "CN *= *$d"; then echo "  $d  ✓  ${subj#*notAfter=}"; else rest+=("$d"); fi
     done
