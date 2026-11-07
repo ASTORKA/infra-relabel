@@ -66,6 +66,9 @@ FORCE_MODE=false
 FORCE_DOMAIN=""
 FORCE_PORT=""
 FORCE_TEMPLATE=""
+# Язык заглушки: ru (по умолчанию, русские шаблоны) | en (только английские,
+# без единого русского символа). Флаг --lang en или переменная SELFSTEAL_LANG=en.
+TEMPLATE_LANG="${SELFSTEAL_LANG:-ru}"
 
 # Manual SSL certificate paths (for wildcard/custom certs)
 MANUAL_SSL_CERT=""
@@ -121,6 +124,17 @@ declare -A TEMPLATE_FOLDERS=(
     ["9"]="speedtest"
     ["10"]="games-site"
     ["11"]="modmanager"
+    # Английские версии (без кирилицы) — ставятся при --lang en
+    ["12"]="fanfilm4k-en"
+    ["13"]="kinopulse-en"
+    ["14"]="serialbox-en"
+    ["15"]="cinemax-en"
+    ["16"]="converter-en"
+    ["17"]="convertit-en"
+    ["18"]="downloader-en"
+    ["19"]="speedtest-en"
+    ["20"]="games-site-en"
+    ["21"]="modmanager-en"
 )
 
 declare -A TEMPLATE_NAMES=(
@@ -135,8 +149,21 @@ declare -A TEMPLATE_NAMES=(
     ["9"]="📶 SpeedTest — тест скорости"
     ["10"]="🎮 Games-site — ретро игровой портал"
     ["11"]="🧩 ModManager — менеджер модов"
+    ["12"]="🎬 FANFILM4K (EN) — 4K movies (maintenance)"
+    ["13"]="🔴 CinePulse (EN) — movies & series (maintenance)"
+    ["14"]="🟣 SerialBox (EN) — TV show tracker (maintenance)"
+    ["15"]="🟢 CINEMAX (EN) — arthouse cinema 4K (maintenance)"
+    ["16"]="🔄 ConvertMaster (EN) — file converter"
+    ["17"]="🎞 VidCraft (EN) — video editor / converter"
+    ["18"]="⬇️ Downloader (EN) — downloader"
+    ["19"]="📶 SpeedCheck (EN) — internet speed test"
+    ["20"]="🎮 RetroStream (EN) — retro games portal"
+    ["21"]="🧩 ModManager (EN) — mod manager"
 )
 TEMPLATE_COUNT=${#TEMPLATE_FOLDERS[@]}
+# Наборы по языку: ru — прежние 1–11; en — английские 12–21 и FileCloud (7, уже английский).
+TEMPLATE_SET_RU="1 2 3 4 5 6 7 8 9 10 11"
+TEMPLATE_SET_EN="7 12 13 14 15 16 17 18 19 20 21"
 
 # Color definitions
 readonly RED='\033[0;31m'
@@ -1371,6 +1398,23 @@ while [ $# -gt 0 ]; do
             FORCE_PORT="${1#*=}"
             if ! [[ "$FORCE_PORT" =~ ^[0-9]+$ ]]; then
                 log_error "--port requires a valid port number"
+                exit 1
+            fi
+            shift
+            ;;
+        --lang)
+            if [ "$2" = "en" ] || [ "$2" = "ru" ]; then
+                TEMPLATE_LANG="$2"
+                shift 2
+            else
+                log_error "--lang requires en or ru"
+                exit 1
+            fi
+            ;;
+        --lang=*)
+            TEMPLATE_LANG="${1#*=}"
+            if [ "$TEMPLATE_LANG" != "en" ] && [ "$TEMPLATE_LANG" != "ru" ]; then
+                log_error "--lang requires en or ru"
                 exit 1
             fi
             shift
@@ -2988,22 +3032,24 @@ install_command() {
     echo -e "${WHITE}🎨 Installing Template${NC}"
     echo -e "${GRAY}$(printf '─%.0s' $(seq 1 35))${NC}"
     
-    # Список доступных шаблонов — из реестра TEMPLATE_FOLDERS/TEMPLATE_NAMES
-    local templates=() template_names=() _n
-    for _n in $(seq 1 "$TEMPLATE_COUNT"); do
+    # Список доступных шаблонов — из реестра, по языку (--lang / SELFSTEAL_LANG)
+    local templates=() template_names=() _n _set="$TEMPLATE_SET_RU"
+    [ "$TEMPLATE_LANG" = "en" ] && _set="$TEMPLATE_SET_EN"
+    for _n in $_set; do
         templates+=("$_n")
         template_names+=("${TEMPLATE_NAMES[$_n]}")
     done
+    log_info "Template language: $TEMPLATE_LANG (${#templates[@]} templates)"
 
     local selected_template=""
     local selected_name=""
     local installed_template=""
 
     if [ -n "$FORCE_TEMPLATE" ]; then
-        # Шаблон задан флагом --template <n>
+        # Шаблон задан флагом --template <n> (номер из реестра, любой язык)
         if [[ -n "${TEMPLATE_FOLDERS[$FORCE_TEMPLATE]:-}" ]]; then
             selected_template="$FORCE_TEMPLATE"
-            selected_name="${template_names[$((FORCE_TEMPLATE - 1))]}"
+            selected_name="${TEMPLATE_NAMES[$FORCE_TEMPLATE]}"
             log_info "Using specified template: $selected_name"
         else
             log_warning "Invalid template number ($FORCE_TEMPLATE), using random"
@@ -3012,13 +3058,13 @@ install_command() {
             selected_name=${template_names[$random_index]}
         fi
     elif [ "$FORCE_MODE" = true ] || [ ! -t 0 ]; then
-        # Неинтерактивный режим (--force / pipe) — случайный выбор
+        # Неинтерактивный режим (--force / pipe) — случайный выбор из набора языка
         local random_index=$((RANDOM % ${#templates[@]}))
         selected_template=${templates[$random_index]}
         selected_name=${template_names[$random_index]}
         echo -e "${CYAN}🎲 Selected template: ${selected_name}${NC}"
     else
-        # Интерактивный выбор: конкретный шаблон или случайный
+        # Интерактивный выбор: пункт меню (1..N) или случайный
         echo -e "${WHITE}Выберите шаблон-заглушку:${NC}"
         echo -e "   ${CYAN}0)${NC} 🎲 Случайный"
         local _i
@@ -3028,8 +3074,8 @@ install_command() {
         echo
         local tpl_choice
         read -p "$(echo -e "${CYAN}Ваш выбор [0-${#templates[@]}], Enter = случайный: ${NC}")" tpl_choice
-        if [[ "$tpl_choice" =~ ^[0-9]+$ ]] && [[ -n "${TEMPLATE_FOLDERS[$tpl_choice]:-}" ]]; then
-            selected_template="$tpl_choice"
+        if [[ "$tpl_choice" =~ ^[0-9]+$ ]] && [ "$tpl_choice" -ge 1 ] && [ "$tpl_choice" -le "${#templates[@]}" ]; then
+            selected_template="${templates[$((tpl_choice - 1))]}"
             selected_name="${template_names[$((tpl_choice - 1))]}"
             log_info "Выбран шаблон: $selected_name"
         else
@@ -3971,7 +4017,9 @@ template_command() {
                 ;;
             r|R)
                 # Random template
-                local random_id=$((RANDOM % TEMPLATE_COUNT + 1))
+                local _rs="$TEMPLATE_SET_RU"; [ "$TEMPLATE_LANG" = "en" ] && _rs="$TEMPLATE_SET_EN"
+                local _ra=($_rs)
+                local random_id="${_ra[RANDOM % ${#_ra[@]}]}"
                 echo -e "${CYAN}🎲 Randomly selected: ${TEMPLATE_NAMES[$random_id]}${NC}"
                 apply_template_and_restart "$random_id"
                 ;;
@@ -4741,7 +4789,8 @@ show_help() {
     printf "   ${CYAN}%-22s${NC} %s\n" "--force, -f" "Skip DNS validation and prompts"
     printf "   ${CYAN}%-22s${NC} %s\n" "--domain <domain>" "Domain for installation"
     printf "   ${CYAN}%-22s${NC} %s\n" "--port <port>" "HTTPS port (default: Caddy 443, nginx 9443)"
-    printf "   ${CYAN}%-22s${NC} %s\n" "--template <1-11>" "Template number to install"
+    printf "   ${CYAN}%-22s${NC} %s\n" "--template <1-21>" "Template number to install (12-21 — English)"
+    printf "   ${CYAN}%-22s${NC} %s\n" "--lang en|ru" "Stub language: en — only English templates (no Cyrillic). Env: SELFSTEAL_LANG"
     echo
     echo -e "${WHITE}Manual SSL Certificate:${NC}"
     printf "   ${CYAN}%-22s${NC} %s\n" "--ssl-cert <path>" "Path to fullchain certificate"

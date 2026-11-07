@@ -810,10 +810,10 @@ cmd_selfsteal() {
     # точному адресу. Порт 9443 (умолчание selfsteal) при target 127.0.0.1:443 — петля:
     # Xray шлёт пробы сам себе, десятки тысяч соединений и 100% CPU.
     local _port="${SELFSTEAL_PORT:-443}"
-    SELFSTEAL_TEMPLATES_DIR="$SCRIPT_DIR/selfsteal/sni-templates" bash "$_sf" @ --force --domain "$_first" --port "$_port" install
+    SELFSTEAL_LANG="${SELFSTEAL_LANG:-ru}" SELFSTEAL_TEMPLATES_DIR="$SCRIPT_DIR/selfsteal/sni-templates" bash "$_sf" @ --force --domain "$_first" --port "$_port" install
     c_yel "  target Reality-инбаунда в панели должен быть 127.0.0.1:$_port (порт заглушки)"
   else
-    SELFSTEAL_TEMPLATES_DIR="$SCRIPT_DIR/selfsteal/sni-templates" bash "$_sf" @ install
+    SELFSTEAL_LANG="${SELFSTEAL_LANG:-ru}" SELFSTEAL_TEMPLATES_DIR="$SCRIPT_DIR/selfsteal/sni-templates" bash "$_sf" @ install
   fi
   rm -f "$_sf"
 }
