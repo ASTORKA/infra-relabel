@@ -1104,10 +1104,24 @@ cmd_uninstall() {
 #          (аналог sendThrough в outbound «DIRECT»).
 #   Недостающие адреса из --in/--out вешаются на внешний интерфейс (/32).
 #   Всё переживает перезагрузку (systemd-юнит relabel-ips), откат: relabel ips-restore.
+#   Адреса не слетают и без перезагрузки: если интерфейсом управляет systemd-networkd
+#   (netplan), они прописываются ему drop-in'ом — иначе перезапуск networkd (например,
+#   unattended-upgrades после обновления libc) снимает «чужие» /32. Плюс таймер
+#   relabel-ips-check раз в минуту возвращает пропавшие адреса и правила nft.
 
 IPS_DIR="/etc/relabel-ips"
 IPS_UNIT="/etc/systemd/system/relabel-ips.service"
+IPS_CHECK_UNIT="/etc/systemd/system/relabel-ips-check.service"
+IPS_CHECK_TIMER="/etc/systemd/system/relabel-ips-check.timer"
+IPS_DROPIN_NAME="50-relabel-ips.conf"
+IPS_DROPIN_STATE="$STATE_DIR/ips.dropin"   # путь drop-in'а networkd, который записали мы
 IPS_STATE_FILE="$STATE_DIR/ips.added"   # адреса, которые повесили мы (снимем при откате)
+
+# .network-файл, которым systemd-networkd настраивает интерфейс (пусто — не управляет).
+networkd_file() {
+  systemctl is-active --quiet systemd-networkd 2>/dev/null || return 0
+  networkctl status "$1" 2>/dev/null | awk -F': ' '/Network File:/ { gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2; exit }' | grep -E '^/.+\.network$' || true
+}
 
 # Значения флагов вида --x a,b или --x=a,b (заполняются в точке входа).
 OPT_DOMAINS=""; OPT_IN=""; OPT_OUT=""; OPT_PORTS=""
@@ -1315,10 +1329,27 @@ cmd_ips() {
     echo "}"
   } > "$nft"
 
+  # Адреса для networkd: все наши вход/выход, кроме тех, что уже есть в его основном
+  # .network (их прописал netplan/хостер — они и так не слетят).
+  local nf keep=()
+  nf="$(networkd_file "$ifc")"
+  if [ -n "$nf" ]; then
+    for x in "${ins[@]}" "${outs[@]}"; do
+      grep -qE "^[[:space:]]*Address[[:space:]]*=[[:space:]]*$x/" "$nf" 2>/dev/null || keep+=("$x")
+    done
+  fi
+  local dropin=""
+  [ -n "$nf" ] && dropin="/etc/systemd/network/$(basename "$nf").d/$IPS_DROPIN_NAME"
+
   if [ "$DRY_RUN" = 1 ]; then
     c_dim "  [dry] ip addr add <адрес>/32 dev $ifc  для: ${add[*]:-—}"
     c_dim "  [dry] nft -f $IPS_DIR/ips.nft:"; sed 's/^/    /' "$nft"
     c_dim "  [dry] systemd-юнит relabel-ips (адреса + nft при загрузке)"
+    c_dim "  [dry] таймер relabel-ips-check: раз в минуту вернуть пропавшие адреса/правила"
+    if [ -n "$nf" ] && [ "${#keep[@]}" -gt 0 ]; then
+      c_dim "  [dry] networkd ($nf) → drop-in $dropin: ${keep[*]}"
+    elif [ -n "$nf" ]; then c_dim "  [dry] networkd: все адреса уже в $nf — drop-in не нужен"
+    else c_dim "  [dry] networkd интерфейсом $ifc не управляет — drop-in не нужен"; fi
     rm -f "$nft"; return 0
   fi
 
@@ -1328,13 +1359,60 @@ cmd_ips() {
   cat > "$IPS_DIR/apply.sh" <<APPLY_EOF
 #!/bin/sh
 # сгенерировано relabel ips; адреса + правила nft
+# apply.sh        — всё заново (загрузка, relabel ips)
+# apply.sh check  — таймер: вернуть пропавшие адреса; nft — только если таблицы нет
 IFC="\$(ip -4 route show default | awk '{for (i = 1; i < NF; i++) if (\$i == "dev") { print \$(i + 1); exit }}')"
+[ -n "\$IFC" ] || IFC="$ifc"
 for a in $(printf '%s ' "${ins[@]}" "${outs[@]}"); do
-  ip -4 addr show dev "\$IFC" | grep -q " \$a/" || ip addr add "\$a/32" dev "\$IFC"
+  if ! ip -4 addr show dev "\$IFC" | grep -q " \$a/"; then
+    ip addr add "\$a/32" dev "\$IFC" && [ "\$1" = check ] && logger -t relabel-ips "адрес \$a пропал с \$IFC — вернул"
+  fi
 done
+if [ "\$1" = check ] && /usr/sbin/nft list table inet relabel_ips >/dev/null 2>&1; then exit 0; fi
+[ "\$1" = check ] && logger -t relabel-ips "таблица relabel_ips пропала — загрузил заново"
 /usr/sbin/nft -f $IPS_DIR/ips.nft
 APPLY_EOF
   chmod 0755 "$IPS_DIR/apply.sh"
+
+  # networkd: прописать адреса, чтобы перезапуск networkd их не снимал.
+  local old_dropin=""; [ -f "$IPS_DROPIN_STATE" ] && old_dropin="$(cat "$IPS_DROPIN_STATE")"
+  if [ -n "$old_dropin" ] && [ "$old_dropin" != "$dropin" ]; then
+    rm -f "$old_dropin"; rmdir "$(dirname "$old_dropin")" 2>/dev/null || true; rm -f "$IPS_DROPIN_STATE"
+  fi
+  if [ -n "$dropin" ] && [ "${#keep[@]}" -gt 0 ]; then
+    mkdir -p "$(dirname "$dropin")"
+    {
+      echo "# relabel ips: входные/выходные адреса — чтобы перезапуск systemd-networkd их не снимал"
+      for x in "${keep[@]}"; do printf '[Address]\nAddress=%s/32\n' "$x"; done
+    } > "$dropin"
+    chmod 0644 "$dropin"
+    echo "$dropin" > "$IPS_DROPIN_STATE"
+    # networkctl reload не делаем: адреса уже стоят, drop-in нужен при следующем перезапуске networkd.
+    c_grn "· networkd: адреса ${keep[*]} прописаны в $dropin"
+  elif [ -n "$dropin" ]; then
+    rm -f "$dropin"; rmdir "$(dirname "$dropin")" 2>/dev/null || true; rm -f "$IPS_DROPIN_STATE"
+  fi
+
+  cat > "$IPS_CHECK_UNIT" <<UNIT_EOF
+[Unit]
+Description=relabel ips: вернуть пропавшие адреса и правила
+After=relabel-ips.service
+
+[Service]
+Type=oneshot
+ExecStart=$IPS_DIR/apply.sh check
+UNIT_EOF
+  cat > "$IPS_CHECK_TIMER" <<UNIT_EOF
+[Unit]
+Description=relabel ips: проверка адресов раз в минуту
+
+[Timer]
+OnBootSec=60
+OnUnitActiveSec=60
+
+[Install]
+WantedBy=timers.target
+UNIT_EOF
   cat > "$IPS_UNIT" <<UNIT_EOF
 [Unit]
 Description=relabel ips: входные/выходные адреса ноды
@@ -1354,7 +1432,8 @@ UNIT_EOF
   systemctl daemon-reload
   systemctl enable relabel-ips.service >/dev/null 2>&1
   systemctl restart relabel-ips.service || die "relabel-ips не применился: journalctl -u relabel-ips"
-  c_grn "· применено: юнит relabel-ips, правила $IPS_DIR/ips.nft"
+  systemctl enable --now relabel-ips-check.timer >/dev/null 2>&1 || c_yel "· таймер relabel-ips-check не включился"
+  c_grn "· применено: юнит relabel-ips, таймер relabel-ips-check, правила $IPS_DIR/ips.nft"
 
   echo; c_grn "════ проверка ════"
   ip -4 -br addr show dev "$ifc" | sed 's/^/  /'
@@ -1378,10 +1457,16 @@ IPS_EOF
 
 cmd_ips_restore() {
   [ "${EUID:-$(id -u)}" -eq 0 ] || [ "$DRY_RUN" = 1 ] || die "relabel ips-restore требует root"
-  c_grn "· снимаю relabel-ips (правила nft, юнит)"
+  c_grn "· снимаю relabel-ips (правила nft, юнит, таймер, drop-in networkd)"
+  run systemctl disable --now relabel-ips-check.timer 2>/dev/null || true
   run systemctl disable --now relabel-ips.service 2>/dev/null || true
   run nft delete table inet relabel_ips 2>/dev/null || true
-  run rm -f "$IPS_UNIT"
+  run rm -f "$IPS_UNIT" "$IPS_CHECK_UNIT" "$IPS_CHECK_TIMER"
+  if [ -f "$IPS_DROPIN_STATE" ]; then
+    local d; d="$(cat "$IPS_DROPIN_STATE")"
+    if [ -n "$d" ]; then run rm -f "$d"; [ "$DRY_RUN" = 1 ] || rmdir "$(dirname "$d")" 2>/dev/null || true; fi
+    run rm -f "$IPS_DROPIN_STATE"
+  fi
   run rm -rf "$IPS_DIR"
   [ "$DRY_RUN" = 1 ] || systemctl daemon-reload
   local ifc x; ifc="$(default_iface)"
