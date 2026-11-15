@@ -1125,6 +1125,10 @@ networkd_file() {
 
 # Значения флагов вида --x a,b или --x=a,b (заполняются в точке входа).
 OPT_DOMAINS=""; OPT_IN=""; OPT_OUT=""; OPT_PORTS=""
+# --close-mgmt (CLOSE_MGMT=1): на входных адресах закрыть SSH и порт ноды — вход
+# отвечает только как VPN. НЕ включать, если входной адрес — он же адрес ноды в
+# панели Remnawave: панель ходит на него по NODE_PORT (2222).
+OPT_CLOSE_MGMT=0
 
 valid_ipv4() {
   local ip="$1" o
@@ -1285,6 +1289,16 @@ cmd_ips() {
   for x in "${ins[@]}" "${outs[@]}"; do valid_ipv4 "$x" || die "не IPv4: $x"; done
   for x in "${ports[@]}"; do [[ "$x" =~ ^[0-9]{1,5}(-[0-9]{1,5})?$ ]] || die "не порт: $x"; done
   for x in "${ports[@]}"; do [ "$x" != 22 ] || die "порт 22 в --ports нельзя — потеряешь SSH"; done
+  # SSH-порт — из SSH_PORT или того, что слушает sshd; порт ноды — NODE_PORT (2222).
+  local sshp="${SSH_PORT:-}"
+  [ -n "$sshp" ] || sshp="$(ss -Htlnp 2>/dev/null | awk '/"sshd"/ { sub(/.*:/, "", $4); print $4; exit }')"
+  local mgmt; mgmt="$(printf '%s\n' "${sshp:-22}" "${NODE_PORT:-2222}" | sort -un | paste -sd, - | sed 's/,/, /g')"
+  if [ "$OPT_CLOSE_MGMT" = 1 ]; then
+    [ "${#ins[@]}" -gt 0 ] || die "--close-mgmt без --in не имеет смысла"
+    # Не отрезать себе SSH: адрес, по которому мы зашли, не может быть закрытым входом.
+    local via; via="$(printf '%s' "${SSH_CONNECTION:-}" | awk '{print $3}')"
+    for x in "${ins[@]}"; do [ "$x" != "$via" ] || die "--close-mgmt: ты зашёл по SSH на входной адрес $x — закрытие отрежет доступ"; done
+  fi
 
   local ifc; ifc="$(default_iface)"
   [ -n "$ifc" ] || die "не определил внешний интерфейс (нет default route)"
@@ -1314,6 +1328,10 @@ cmd_ips() {
     if [ "${#ins[@]}" -gt 0 ]; then
       echo "  chain input {"
       echo "    type filter hook input priority -5; policy accept;"
+      if [ "$OPT_CLOSE_MGMT" = 1 ]; then
+        echo "    # SSH и порт ноды на входном адресе закрыты: вход отвечает только как VPN"
+        echo "    ip daddr { $inl } tcp dport { $mgmt } drop"
+      fi
       echo "    # VPN-порты отвечают только на входных адресах; loopback (заглушка) не трогаем"
       echo "    ip daddr != { $inl, 127.0.0.0/8 } tcp dport { $pl } drop"
       echo "    ip daddr != { $inl, 127.0.0.0/8 } udp dport { $pl } drop"
@@ -1446,6 +1464,7 @@ UNIT_EOF
     c_dim "  Не нужен IPv6 наружу — отключи его исходящие или задай domainStrategy UseIPv4 в outbound."
   fi
   [ "${#ins[@]}" -gt 0 ] && c_dim "  VPN-порты ${ports[*]} отвечают только на: ${ins[*]}"
+  [ "$OPT_CLOSE_MGMT" = 1 ] && c_dim "  на входе ${ins[*]} закрыты SSH и порт ноды: $mgmt"
   cat <<IPS_EOF
 
 ════ в панели Remnawave ════
@@ -1512,7 +1531,8 @@ relabel.sh — маскировка имён docker-контейнеров VPN-�
   relabel ipsni [--dry-run]     заглушка под хост «IP в SNI + фрагментация» + проверка (root)
   relabel domains d1 [d2 …] [--dry-run]
                                заглушка на несколько доменов (свой сертификат на каждый) + проверка
-  relabel ips [--in A1,A2] [--out B] [--ports 443,8443] [--dry-run]   (root)
+  relabel ips [--in A1,A2] [--out B] [--ports 443,8443] [--close-mgmt] [--dry-run]   (root)
+                               --close-mgmt: на входе закрыть SSH и порт ноды (не если вход = адрес ноды в панели)
                                вход только на A1/A2 (VPN-порты на прочих IP дропаются),
                                выход в интернет с B (SNAT); недостающие IP вешает сам
   relabel ips-restore [--dry-run]  снять правила/юнит ips и повешенные им адреса
@@ -1541,6 +1561,7 @@ while [ "$_i" -lt "${#_args[@]}" ]; do
     --no-selfsteal) NO_SELFSTEAL=1 ;;
     --no-block|--no-firewall) NO_BLOCK=1 ;;
     --no-antiscan) NO_ANTISCAN=1 ;;
+    --close-mgmt) OPT_CLOSE_MGMT=1 ;;
     --domains=*) OPT_DOMAINS="${_a#*=}" ;;
     --in=*)      OPT_IN="${_a#*=}" ;;
     --out=*)     OPT_OUT="${_a#*=}" ;;
@@ -1561,6 +1582,7 @@ OPT_DOMAINS="${OPT_DOMAINS:-${DOMAINS:-}}"
 OPT_IN="${OPT_IN:-${IN_IPS:-}}"
 OPT_OUT="${OPT_OUT:-${OUT_IP:-}}"
 OPT_PORTS="${OPT_PORTS:-${VPN_PORTS:-}}"
+[ "${CLOSE_MGMT:-0}" = 1 ] && OPT_CLOSE_MGMT=1
 # relabel domains d1 d2 … — домены позиционно
 if [ "${_pos[0]:-}" = domains ] && [ "${#_pos[@]}" -gt 1 ]; then
   OPT_DOMAINS="${OPT_DOMAINS:+$OPT_DOMAINS,}$(IFS=,; echo "${_pos[*]:1}")"
